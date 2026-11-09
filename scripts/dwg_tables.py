@@ -31,6 +31,7 @@ import json
 import os
 import re
 import sys
+import time
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -103,29 +104,44 @@ def parse_qty(s: str):
 # --------------------------------------------------------------------------- #
 # 实体读取
 # --------------------------------------------------------------------------- #
-def read_entities_com(path: str):
-    """通过 CAD COM 读取所有 TEXT/MTEXT 的插入点与文字。"""
+def open_cad_app(retries=3):
+    """
+    打开一个 CAD COM 实例，返回 (app, owns)。
+    批量读图时应只调用一次并复用 app：反复 DispatchEx/Quit 会让 DCOM
+    偶发「无效的类字符串」，因此这里同时做多 ProgID 与多轮重试。
+    """
     try:
         import win32com.client as win32
     except ImportError as exc:
         raise RuntimeError("需要 pywin32：python -m pip install pywin32") from exc
+    last = None
+    for attempt in range(retries):
+        for pid in CAD_PROGIDS:
+            for factory in ("DispatchEx", "Dispatch"):
+                try:
+                    app = getattr(win32, factory)(pid)
+                    return app, factory == "DispatchEx"
+                except Exception as exc:       # noqa: BLE001
+                    last = exc
+        if attempt < retries - 1:
+            time.sleep(1.5)
+    raise RuntimeError("未找到可用的 CAD COM 组件（浩辰/AutoCAD/中望）。最后一次错误：%s" % last)
 
-    app, owns_app, last = None, False, None
-    for pid in CAD_PROGIDS:
+
+def close_cad_app(app, owns=True):
+    """只关闭自己创建的实例，避免影响用户已打开的 CAD。"""
+    if app is not None and owns:
         try:
-            app = win32.DispatchEx(pid)       # 独立实例，退出时不影响用户已开的 CAD
-            owns_app = True
-            break
-        except Exception as exc:              # noqa: BLE001
-            last = exc
-            try:
-                app = win32.Dispatch(pid)
-                owns_app = False
-                break
-            except Exception as exc2:         # noqa: BLE001
-                last = exc2
+            app.Quit()
+        except Exception:                      # noqa: BLE001
+            pass
+
+
+def read_entities_com(path: str, app=None):
+    """通过 CAD COM 读取所有 TEXT/MTEXT 的插入点与文字；app 可复用以减少启动次数。"""
+    owns_app = False
     if app is None:
-        raise RuntimeError("未找到可用的 CAD COM 组件（浩辰/AutoCAD/中望）。最后一次错误：%s" % last)
+        app, owns_app = open_cad_app()
 
     try:
         try:
@@ -182,11 +198,7 @@ def read_entities_com(path: str):
             pass
         return ents
     finally:
-        if owns_app:
-            try:
-                app.Quit()
-            except Exception:                 # noqa: BLE001
-                pass
+        close_cad_app(app, owns_app)
 
 
 def read_entities_dxf(path: str):
@@ -211,12 +223,13 @@ def read_entities_dxf(path: str):
     return ents
 
 
-def load_entities(drawing: str, from_json: str | None = None, cache: str | None = None):
+def load_entities(drawing: str, from_json: str | None = None,
+                  cache: str | None = None, app=None):
     if from_json:
         data = json.load(open(from_json, encoding="utf-8"))
         return data["entities"], data
     ext = os.path.splitext(drawing)[1].lower()
-    ents = read_entities_dxf(drawing) if ext == ".dxf" else read_entities_com(drawing)
+    ents = read_entities_dxf(drawing) if ext == ".dxf" else read_entities_com(drawing, app=app)
     meta = {"drawing": os.path.abspath(drawing), "version": 1, "entities": ents}
     if cache:
         with open(cache, "w", encoding="utf-8") as f:

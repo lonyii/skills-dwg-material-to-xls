@@ -77,15 +77,27 @@ python install.py --check                               # 只看远端版本
 
 ## 三、怎么用
 
-安装后在 AI 对话里直接说：
+安装后把**若干 `.dwg`** 发给 AI，说一句：
 
 ```
-把这两张 dwg 的材料表导入 excel 做材料平差 / 材料汇总
+把这些 dwg 的材料表导出，生成材料平差表
 ```
 
-并附上施工图、竣工图两份 `.dwg`。技能会自动识别材料表、按分组匹配、生成核对报告并写出 `.xls`。
+AI 不需要你指出哪张是竣工图：脚本按目录/文件名、材料表图签阶段自动判别竣工图与施工图，
+按工程编号分组，输出 `<工程编号>+<工程名称>.xls`
+（如 `IC24H201+南昌县向塘博乐美幼儿园配套燃气工程.xls`）及同名核对报告。
+**只给一张竣工图时，施工图量自动等于竣工图量**（J/K/L 与 C/D/E 相同，O 列「相同」）。
 
-也可以直接跑命令行（在技能目录下）：
+一键命令（AI 会执行）：
+
+```bash
+python scripts/auto_export.py "图1.dwg" "图2.dwg" ... --out-dir "D:/输出"
+```
+
+常用参数：`--out-dir`、`--cache-dir`（复用图纸缓存、整批只启动一次 CAD）、
+`--dry-run`、`--row-base auto|asbuilt|design|merged`、`--template`、`--no-supplement`。
+
+需要手动精细控制（明确指定哪张是竣工图/施工图）时：
 
 ```bash
 python scripts/import_materials.py \
@@ -120,7 +132,7 @@ python scripts/import_materials.py --asbuilt "竣工图.dwg" --design "施工图
 | `assets/材料平差模板.xls` | `--template sample` | 40 行 | IC24H201 成品文件，用于复现格式与逐格验收 |
 
 常用参数：`--template summary|sample|路径`、`--no-fill-summary`（只写初步比对）、
-`--match-mode group|global|hybrid`、`--row-base asbuilt|design|merged`、
+`--match-mode group|global|hybrid`、`--row-base asbuilt|design|merged`（自动编排时默认 `auto`）、
 `--no-supplement`、`--asbuilt-tables 1`、`--dry-run`。
 完整说明见 [SKILL.md](SKILL.md) 与 [references/layout.md](references/layout.md)。
 
@@ -186,6 +198,7 @@ dwg-material-to-xls/
 ├── update.py                      # 版本检查与升级
 ├── release.py                     # 维护者发布
 ├── scripts/
+│   ├── auto_export.py             # 默认入口：若干 DWG 自动判别、分组、命名、生成
 │   ├── dwg_tables.py              # DWG 文字提取、材料表识别（inspect / extract）
 │   └── import_materials.py        # 分组匹配、核对报告、Excel 保真写入
 ├── references/
@@ -215,6 +228,7 @@ dwg-material-to-xls/
 
 | 版本 | 日期 | 内容 |
 |---|---|---|
+| 1.3.0 | 2026-11-10 | 新增 `auto_export.py` 默认入口：若干 DWG 自动判别竣工/施工图、按工程分组、按「编号+名称」命名、单竣工图时施工图量=竣工图量、行序自动选择；整批复用一个 CAD 实例并支持实体缓存 |
 | 1.2.0 | 2026-11-10 | 两个新工程实例验证：图框比例自适应、缺图签多页阶段继承与页序修正、施工图数据自动补充、`--row-base` 三种行序基准；三实例均通过回归 |
 | 1.1.0 | 2026-11-10 | 内置「70623加强比对版」汇总模板为默认底稿，自动同步 `2-汇总` / 打印版 / 变更估价；模板容量自动探测 |
 | 1.0.0 | 2026-11-10 | 首次发布：DWG 施工图/竣工图材料表导入 `1-初步比对`，含成品模板与核对报告 |
