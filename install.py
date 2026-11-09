@@ -221,7 +221,7 @@ def post_install(dst: Path):
     log("  %s" % ("依赖就绪。" if ok else "装好缺失依赖后即可使用。"))
     log()
     log("安装完成！在 AI 对话里直接说：")
-    log('  「把这两张 dwg 的材料表导入 excel 做材料平差」并附上施工图和竣工图')
+    log('  「把这些 dwg 的材料表导出，生成材料平差表」并附上若干图纸即可')
     log("若 WorkBuddy 已打开，刷新/重启一次以加载新技能。")
 
 
