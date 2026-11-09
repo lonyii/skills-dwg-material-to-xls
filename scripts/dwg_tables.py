@@ -508,8 +508,9 @@ def parse_table(ents, table):
         if ln["is_header_line"]:
             ln["descs"] = []
         elif table.get("layout") == "name-spec":
-            # 新图框：名称 + 规格 + 材料 三列拼成一条物料描述
-            ln["descs"] = [t for key in ("名称", "规格", "材料")
+            # 新图框：成品表只取「名称 + 规格」两列，物料材质列（如 Q235B、
+            # KTH350-10）不写入物料描述；名称列内部的下划线/空格原样保留。
+            ln["descs"] = [t for key in ("名称", "规格")
                            for t in cols.get(key, [])
                            if len(t) >= 2 and not re.fullmatch(r"[\d.\s]+", t)
                            and not _is_sign_text(t)]
@@ -556,10 +557,11 @@ def parse_table(ents, table):
             group = [anchor] + extra
             group.sort(key=lambda l: -l["y"])       # 描述按视觉从上到下拼接
             if table.get("layout") == "name-spec":
-                # 新图框的名称/规格里常有空格（如「Q11F-16T DN25 n4」），
-                # 统一换成下划线，与旧图框的物料描述格式一致。
-                desc = "_".join(re.sub(r"\s+", "_", d)
-                                for ln in group for d in ln["descs"]).strip()
+                # 成品表格式：名称列原样（含内部空格/下划线）+ 单个空格 + 规格列原样，
+                # 不拼接材料列，也不把内部空格换成下划线。
+                # 例：热镀锌钢管_燃气专用 DN50（D60.3×3.8）
+                desc = " ".join(d.strip() for ln in group
+                                for d in ln["descs"]).strip()
             else:
                 desc = "\n".join(d for ln in group for d in ln["descs"]).strip()
             if not desc:
