@@ -1,0 +1,2 @@
+# Windows batch files must keep CRLF line endings (also inside GitHub zip archives).
+*.bat text eol=crlf
