@@ -120,8 +120,28 @@ python scripts/import_materials.py --asbuilt "竣工图.dwg" --design "施工图
 | `assets/材料平差模板.xls` | `--template sample` | 40 行 | IC24H201 成品文件，用于复现格式与逐格验收 |
 
 常用参数：`--template summary|sample|路径`、`--no-fill-summary`（只写初步比对）、
-`--match-mode group|global|hybrid`、`--asbuilt-tables 1`、`--dry-run`。
+`--match-mode group|global|hybrid`、`--row-base asbuilt|design|merged`、
+`--no-supplement`、`--asbuilt-tables 1`、`--dry-run`。
 完整说明见 [SKILL.md](SKILL.md) 与 [references/layout.md](references/layout.md)。
+
+### 多实例验证与行序基准（v1.2.0）
+
+已在三个真实工程上回归：
+
+| 工程 | 图框 | 推荐参数 | 与成品逐格比对 |
+|---|---|---|---|
+| IC24H201 向塘博乐美幼儿园 | 1:1 | 默认 `--row-base asbuilt --template sample --no-fill-summary` | A3:O43 共 410 格 0 差异 |
+| NC25D007 天之益锅炉 | 1:1，竣工图两页（一页无图签） | 默认 `--row-base asbuilt` | 描述与行序提取正确；成品另含人工插入项与另一版次数量，需人工复核 |
+| ID24E107 天天包子店 | 1:2 缩放 | `--row-base merged` | 41 行 0 差异 |
+
+- 脚本按表头「序号→单位」锚点间距自动换算全部列偏移与行容差，1:1 与 1:2 图框
+  共用一套参数；`inspect` 会打印每张表的「比例」便于诊断。
+- 竣工图 DWG 常附带完整的多页施工图版材料表，会自动补充施工图数据源
+  （用户给的施工图 DWG 优先，`--no-supplement` 可关闭）；缺图签的多页继承邻近页阶段。
+- `--row-base`：`asbuilt`（默认，竣工表行序）、`design`（施工表行序，竣工独有追加表尾）、
+  `merged`（两表并集按原顺序交错，并合并重复的分组标题）。
+- 成品可能含人工插入/合并的行或另一版次数量，差异项在核对报告中按分组列出，
+  交付前请人工复核，不要直接作为结算依据。
 
 ---
 
@@ -185,6 +205,8 @@ dwg-material-to-xls/
 - **汇总表没同步**：模板缺少 `2-汇总`，或该表 C/D/E/I 首行本身是公式（脚本会跳过并提示）；`--no-fill-summary` 可显式关闭。
 - **输出必须 `.xls`**：用 Excel COM 保真写入，改成 `.xlsx` 会触发格式提示。
 - **工程名称显示成文件名**：加强版打印版的工程名称由文件名公式生成，输出文件建议按项目名命名。
+- **换了设计院图纸后解析出 0 行**：多为出图比例不同，v1.2.0 已做等比自适应；先看 `inspect` 的「比例」是否正常（0.2～4），仍异常再按 `references/layout.md` 调列偏移。
+- **输出行数与手上的成品对不上**：成品常人工插入条目、合并分组或取另一版次数量；先试 `--row-base design` / `merged`，并查看核对报告中 `extras` 的分组分布。
 - **下载慢 / 连接失败**：用 `--mirror` 或环境变量 `GITHUB_MIRROR`，也可手动下载 zip 后 `--local` 安装。
 
 ---
@@ -193,6 +215,7 @@ dwg-material-to-xls/
 
 | 版本 | 日期 | 内容 |
 |---|---|---|
+| 1.2.0 | 2026-11-10 | 两个新工程实例验证：图框比例自适应、缺图签多页阶段继承与页序修正、施工图数据自动补充、`--row-base` 三种行序基准；三实例均通过回归 |
 | 1.1.0 | 2026-11-10 | 内置「70623加强比对版」汇总模板为默认底稿，自动同步 `2-汇总` / 打印版 / 变更估价；模板容量自动探测 |
 | 1.0.0 | 2026-11-10 | 首次发布：DWG 施工图/竣工图材料表导入 `1-初步比对`，含成品模板与核对报告 |
 

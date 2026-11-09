@@ -37,6 +37,10 @@ if hasattr(sys.stdout, "reconfigure"):
 
 HEADER_KEYS = ("序号", "物料描述", "单位", "数量", "标准号现行", "备注")
 REQUIRED_HEADERS = ("序号", "物料描述", "单位", "数量")
+# 参考图框「序号→单位」两个表头锚点的间距（图形单位）。
+# 不同设计院/不同比例出图会整体缩放，所有固定偏移与容差都按此比例换算，
+# 这样同一套算法可同时处理 1:1 图框与 1:2 缩放图框（实测 NC25D007 / ID24E107）。
+REF_SEQ_UNIT = 10126.0
 CAD_PROGIDS = (
     "GStarCAD.Application",
     "Gcad.Application",
@@ -223,8 +227,16 @@ def load_entities(drawing: str, from_json: str | None = None, cache: str | None 
 # --------------------------------------------------------------------------- #
 # 表格识别与重建
 # --------------------------------------------------------------------------- #
+def _table_scale(a):
+    """表头「序号→单位」间距相对参考图框的比例，用于换算所有绝对容差。"""
+    w = a["单位"] - a["序号"]
+    if w <= 0:
+        return 1.0
+    return max(0.2, min(4.0, w / REF_SEQ_UNIT))
+
+
 def detect_tables(ents):
-    """返回按 x 坐标排序的材料表定义列表。"""
+    """返回按 (y, x) 排序的材料表定义列表，并自带比例与阶段标注。"""
     headers = []
     for c in ents:
         if norm_header(c["t"]) != "序号":
@@ -240,69 +252,92 @@ def detect_tables(ents):
                 anchors[key] = min(matches, key=lambda e: abs(e["x"] - c["x"]))["x"]
         if all(k in anchors for k in REQUIRED_HEADERS):
             headers.append({"y": c["y"], "anchors": anchors})
-    headers.sort(key=lambda h: (round(h["y"] / 1000), h["anchors"]["序号"]))
+    # 同一图纸中的多页：先按表头 y 降序（上下并排时上页在前），
+    # 同一水平线再按 x 升序（左右并排时左页在前）。
+    headers.sort(key=lambda h: (-round(h["y"] / 1000), h["anchors"]["序号"]))
 
     # 去重（同一表头可能被多个布局重复遍历到）
     uniq = []
     for h in headers:
+        lim = 5000 * _table_scale(h["anchors"])
         if not any(abs(h["y"] - u["y"]) < 200 and
-                   abs(h["anchors"]["序号"] - u["anchors"]["序号"]) < 5000 for u in uniq):
+                   abs(h["anchors"]["序号"] - u["anchors"]["序号"]) < lim for u in uniq):
             uniq.append(h)
 
     tables = []
     for i, h in enumerate(uniq):
         a = h["anchors"]
         seq_x = a["序号"]
+        sc = _table_scale(a)
         next_seq = [u["anchors"]["序号"] for u in uniq
-                    if u["anchors"]["序号"] > seq_x + 5000
-                    and abs(u["y"] - h["y"]) < 8000]
-        right_by_col = a.get("备注", a.get("标准号现行", a["数量"] + 2000)) + 3000
-        x_right = min([right_by_col] + ([min(next_seq) - 1000] if next_seq else []))
-        x_left = seq_x - 1500
+                    if u["anchors"]["序号"] > seq_x + 5000 * sc
+                    and abs(u["y"] - h["y"]) < 8000 * sc]
+        right_by_col = a.get("备注", a.get("标准号现行",
+                                           a["数量"] + 2000 * sc)) + 3000 * sc
+        x_right = min([right_by_col] + ([min(next_seq) - 1000 * sc] if next_seq else []))
+        x_left = seq_x - 1500 * sc
         table = {
             "id": i + 1,
             "header_y": h["y"],
             "anchors": a,
+            "scale": sc,
             "x_left": x_left,
             "x_right": x_right,
-            "bounds": _column_bounds(a, x_left, x_right),
-            "stage": detect_stage(ents, h, x_left, x_right),
-            "title": detect_title(ents, h, x_left, x_right),
+            "bounds": _column_bounds(a, x_left, x_right, sc),
+            "stage": detect_stage(ents, h, x_left, x_right, sc),
+            "title": detect_title(ents, h, x_left, x_right, sc),
         }
         tables.append(table)
+
+    # 同一图框左右并排的多页表，常只有一页带图签阶段文字：
+    # 让 y 接近、x 相邻的「未标注」表继承最近已标注表，避免漏掉整页材料。
+    for t in tables:
+        if t["stage"] != "未标注":
+            continue
+        w = t["anchors"]["单位"] - t["anchors"]["序号"]
+        cands = [u for u in tables
+                 if u["stage"] != "未标注" and u["id"] != t["id"]
+                 and abs(u["header_y"] - t["header_y"]) < 2.5 * w
+                 and 0 < abs(u["anchors"]["序号"] - t["anchors"]["序号"]) < 4 * w]
+        if cands:
+            best = min(cands, key=lambda u: abs(u["header_y"] - t["header_y"])
+                       + 0.1 * abs(u["anchors"]["序号"] - t["anchors"]["序号"]))
+            t["stage"] = best["stage"]
+            t["stage_inherited"] = True
     return tables
 
 
-def _column_bounds(a, x_left, x_right):
+def _column_bounds(a, x_left, x_right, scale=1.0):
     """
     列边界。
 
     注意：CAD 表头文字常居中排版（如 " 物   料   描   述 " 带大量前导空格），
     其插入点 x 明显右于同列数据文字，不能直接用表头锚点的中点切列。
-    这里以「序号/单位/数量」三个稳定锚点加固定偏移定界，适配该设计院图框。
-    若换用其它图框，调整下方各列的偏移数值即可（见 references/layout.md）。
+    这里以「序号/单位/数量」三个稳定锚点加固定偏移定界；所有偏移按
+    scale（本图框相对参考图框的缩放比例）换算，从而兼容不同比例出图。
+    例：参考图框偏移 600，1:2 缩放图框应取 300，否则整列文字会串位。
     """
     seq, unit, qty = a["序号"], a["单位"], a["数量"]
-    std = a.get("标准号现行", qty + 2500)
-    note = a.get("备注", std + 2800)
+    std = a.get("标准号现行", qty + 2500 * scale)
+    note = a.get("备注", std + 2800 * scale)
     b = {
-        "序号": (x_left, seq + 600),
-        "物料描述": (seq + 600, unit - 1500),
-        "单位": (unit - 1500, qty - 600),
-        "数量": (qty - 600, qty + 700),
-        "标准号现行": (qty + 700, note - 1500),
-        "备注": (note - 1500, x_right),
+        "序号": (x_left, seq + 600 * scale),
+        "物料描述": (seq + 600 * scale, unit - 1500 * scale),
+        "单位": (unit - 1500 * scale, qty - 600 * scale),
+        "数量": (qty - 600 * scale, qty + 700 * scale),
+        "标准号现行": (qty + 700 * scale, note - 1500 * scale),
+        "备注": (note - 1500 * scale, x_right),
     }
     return {k: v for k, v in b.items() if k in a or k in REQUIRED_HEADERS}
 
 
-def detect_stage(ents, header, x_left, x_right):
+def detect_stage(ents, header, x_left, x_right, scale=1.0):
     """从图签里判断本表属于「施工图」还是「竣工图」。"""
     hits = []
     for e in ents:
         if not (x_left <= e["x"] <= x_right):
             continue
-        if abs(e["y"] - header["y"]) > 12000:
+        if abs(e["y"] - header["y"]) > 12000 * scale:
             continue
         t = clean_text(e["t"]).strip()
         if t in ("竣工图", "施工图"):
@@ -313,9 +348,9 @@ def detect_stage(ents, header, x_left, x_right):
     return hits[0][1]
 
 
-def detect_title(ents, header, x_left, x_right):
+def detect_title(ents, header, x_left, x_right, scale=1.0):
     for e in ents:
-        if x_left <= e["x"] <= x_right and abs(e["y"] - header["y"]) < 8000:
+        if x_left <= e["x"] <= x_right and abs(e["y"] - header["y"]) < 8000 * scale:
             t = clean_text(e["t"])
             if "材料表" in t:
                 return t[:40]
@@ -324,11 +359,12 @@ def detect_title(ents, header, x_left, x_right):
 
 def _seq_entities(ents, table):
     lo, hi = table["bounds"]["序号"]
+    sc = table.get("scale", 1.0)
     out = []
     for e in ents:
         if not (lo <= e["x"] < hi):
             continue
-        if abs(e["y"] - table["header_y"]) > 42000:
+        if abs(e["y"] - table["header_y"]) > 42000 * sc:
             continue
         t = clean_text(e["t"]).strip()
         if re.fullmatch(r"\d{1,3}", t):
@@ -337,7 +373,7 @@ def _seq_entities(ents, table):
     out.sort(key=lambda s: s["y"])
     dedup = []
     for s in out:
-        if dedup and abs(s["y"] - dedup[-1]["y"]) < 60:
+        if dedup and abs(s["y"] - dedup[-1]["y"]) < 60 * sc:
             continue
         dedup.append(s)
     return dedup
@@ -392,8 +428,9 @@ def parse_table(ents, table):
     if not segs:
         return []
     bounds = table["bounds"]
+    sc = table.get("scale", 1.0)
     all_y = [s["y"] for seg in segs for s in seg]
-    y_lo, y_hi = min(all_y) - 900, max(all_y) + 900
+    y_lo, y_hi = min(all_y) - 900 * sc, max(all_y) + 900 * sc
 
     items = []
     for e in ents:
@@ -408,7 +445,7 @@ def parse_table(ents, table):
 
     lines = []
     for it in items:
-        if lines and abs(lines[-1]["y"] - it[0]) <= 300:
+        if lines and abs(lines[-1]["y"] - it[0]) <= 300 * sc:
             lines[-1]["items"].append(it)
         else:
             lines.append({"y": it[0], "items": [it]})
@@ -437,7 +474,7 @@ def parse_table(ents, table):
     seg_ranges = []
     for k, seg in enumerate(segs):
         ys = [s["y"] for s in seg]
-        lo, hi = min(ys) - 700, max(ys) + 700
+        lo, hi = min(ys) - 700 * sc, max(ys) + 700 * sc
         if k > 0:
             lo = max(lo, (max(s["y"] for s in segs[k - 1]) + min(ys)) / 2)
         if k + 1 < len(segs):
@@ -504,8 +541,15 @@ def extract_rows(drawing, from_json=None, cache=None, stage="auto", tables=None)
     if not chosen and tables is None and stage != "auto":
         # 图签缺少阶段标注时退化为全部表，避免静默产出空表
         chosen = detected
+    # 手动指定表编号时，按用户给出的顺序拼接（可调整左右页先后）；
+    # 自动选表时按检测顺序（先 y 后 x）。
+    if tables:
+        by_id = {t["id"]: t for t in chosen}
+        chosen = [by_id[i] for i in tables if i in by_id]
+    else:
+        chosen = sorted(chosen, key=lambda x: x["id"])
     rows = []
-    for t in sorted(chosen, key=lambda x: x["id"]):
+    for t in chosen:
         rows.extend(parse_table(ents, t))
     assign_groups(rows)
     return {"meta": {k: v for k, v in meta.items() if k != "entities"},
@@ -541,9 +585,11 @@ def main(argv=None):
         for t in tables:
             rows = parse_table(ents, t)
             filled = [r for r in rows if r["desc"]]
-            print("  #%d  [%s]  %s  表头y=%.0f  序号列x=%.0f  有效行=%d  首行=%s" % (
-                t["id"], t["stage"], t["title"] or "(未取到表名)", t["header_y"],
-                t["anchors"]["序号"], len(filled), repr(filled[0]["desc"])[:46] if filled else "-"))
+            print("  #%d  [%s%s]  %s  表头y=%.0f  序号列x=%.0f  比例=%.2f  有效行=%d  首行=%s" % (
+                t["id"], t["stage"], "(继承)" if t.get("stage_inherited") else "",
+                t["title"] or "(未取到表名)", t["header_y"],
+                t["anchors"]["序号"], t.get("scale", 1.0), len(filled),
+                repr(filled[0]["desc"])[:46] if filled else "-"))
         print("\n提示：用 --tables 指定要提取的表；extract 输出 JSON 供导入脚本使用。")
         return 0
 

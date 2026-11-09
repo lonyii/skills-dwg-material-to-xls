@@ -18,6 +18,7 @@ agent_created: true
 成品文件，仅用于复现与逐格验收，避免把样例项目的领量/退量残留到新项目。
 Excel COM 写入可完整保留模板的所有工作表、公式（如 O 列
 `=IF(C4=J4,"相同","")`）、定义名与打印设置。
+已在三个真实工程上验证，适配 1:1 与 1:2 缩放图框、多页续表、缺图签阶段的图纸。
 
 ## 何时使用
 
@@ -73,6 +74,37 @@ python scripts/import_materials.py --asbuilt "竣工图.dwg" --design "施工图
 模板明细容量由 `1-初步比对` O 列公式最后一行自动探测，无需手改行数常量；
 数据超过容量时脚本会自动把 O 列公式向下填充，并同步扩展 `2-汇总` 的 H/J/K/L/M/N 公式。
 
+## 多项目适配与行序基准
+
+三个实测工程（可直接作为回归基准）：
+
+| 工程 | 图框 | 竣工 / 施工图材料表 | 推荐参数 | 与成品逐格比对 |
+|---|---|---|---|---|
+| IC24H201 向塘博乐美幼儿园 | 1:1 | 40 / 52 行 | 默认 `--row-base asbuilt --template sample --no-fill-summary` | A3:O43 共 410 格 **0 差异** |
+| NC25D007 天之益锅炉 | 1:1，竣工图两页（一页无图签） | 73 / 46 行，另从竣工图 DWG 补 59 项 | 默认 `--row-base asbuilt` | 提取正确；成品另含人工插入的 2 项施工图独有项与另一版次数量，需人工复核 |
+| ID24E107 天天包子店 | **1:2 缩放** | 32 / 32 行 | `--row-base merged` | 41 行 **0 差异** |
+
+**比例自适应**：脚本按表头「序号→单位」锚点间距自动换算所有列偏移、
+行聚类与段边界容差（`dwg_tables.py` 的 `REF_SEQ_UNIT` / `_table_scale()`），
+因此 1:1 与 1:2 图框共用一套参数；`inspect` 会打印每张表的「比例」值便于诊断。
+
+**阶段与页序**：同一图框左右并排的多页表，按表头 y 降序、同排 x 升序拼接；
+缺图签阶段文字的一页，会继承邻近已标注页的「施工图 / 竣工图」。
+
+**施工图补充**：竣工图 DWG 常附带完整的多页「施工图版工艺设备材料表」，
+而单独给的施工图 DWG 有时只是某个版次/局部。脚本自动把附带的施工图表
+按描述去重补入施工图数据源（primary 优先），`--no-supplement` 可关闭。
+
+**行序基准** `--row-base`：
+
+- `asbuilt`（默认）— 按竣工图表行序，适合成品以竣工清单为骨架（IC24H201、NC25D007）。
+- `design` — 按施工图表行序，竣工独有项追加表尾。
+- `merged` — 两表并集，独有项按各自原顺序交错插入；会合并重复的分组标题，
+  适合成品按并集人工编排（ID24E107）。
+
+> 成品文件可能含人工插入/合并的行，或取自另一版次的数量。技能按图纸原始数据生成，
+> 差异项会在核对报告里按分组列出，交付前需人工复核，不要直接当结算依据。
+
 ## 标准工作流
 
 1. **先 inspect**：对每份 DWG 运行 `dwg_tables.py inspect`，查看检测到的材料表
@@ -103,6 +135,12 @@ python scripts/import_materials.py --asbuilt "竣工图.dwg" --design "施工图
   `1-初步比对` 的 C/D/E/L 逐行同步；A 编号沿用模板、B 标记与 F/G 领退量不动，
   H/J/K/L/M/N（增加/减少材料、平差量）及打印版 VLOOKUP 由 Excel 自动重算。
   用 `--no-fill-summary` 可只写初步比对。
+- **图框比例**：所有列边界与 y 容差按表头间距等比缩放，换设计院/换出图比例
+  不需要改常量；`inspect` 打印的「比例」应在 0.2～4 之间，异常值说明表头锚点识别有误。
+- **阶段继承与页序**：缺图签的多页表继承邻近页阶段；多页按 y 降序、同排 x 升序拼接，
+  可用 `--asbuilt-tables 2,1` 手动指定顺序（`--tables` 的顺序即拼接顺序）。
+- **施工图补充**：竣工图 DWG 附带的施工图版材料表会自动补入施工图侧，
+  与用户给的施工图 DWG 按描述去重、后者优先；核对报告的 `supplement_added` 记录补入数。
 - **模板安全**：模板文件本身从不被修改；每次输出都是一份新副本。
 
 ## 参数速查
@@ -114,7 +152,9 @@ python scripts/import_materials.py --asbuilt "竣工图.dwg" --design "施工图
 | `--asbuilt-cache` / `--design-cache` | 复用 `inspect --cache` 产出的实体 JSON，不再启动 CAD |
 | `--asbuilt-tables 1` / `--design-tables 1,2` | 手动指定表编号（配合 inspect） |
 | `--asbuilt-stage` / `--design-stage` | 默认 `竣工图` / `施工图`，可设 `auto` 取全部表 |
-| `--match-mode group\|global\|hybrid` | 默认 `group`（同分组优先，复现成品模板）；分组名不一致时用 `hybrid` |
+| `--match-mode group\|global\|hybrid` | 默认 `group`（严格同分组）；分组名不一致时用 `hybrid`（先同组再全局）或 `global` |
+| `--row-base asbuilt\|design\|merged` | 输出行序基准，默认 `asbuilt`，详见「多项目适配与行序基准」 |
+| `--no-supplement` | 不从竣工图 DWG 附带的施工图版材料表补充施工图数据 |
 | `--template` | `summary`（默认加强版汇总模板）/ `sample`（IC24H201 成品模板）/ 任意 `.xls` 路径 |
 | `--no-fill-summary` | 不同步 `2-汇总`，只写 `1-初步比对` |
 | `--sheet` | 默认 `1-初步比对` |
@@ -123,8 +163,12 @@ python scripts/import_materials.py --asbuilt "竣工图.dwg" --design "施工图
 
 ## 故障排查
 
-- **检测到 0 张表 / 有效行 0**：图框列布局不同，调整 `dwg_tables.py` 中
-  `_column_bounds()` 的列偏移；详见 `references/layout.md`。
+- **检测到 0 张表 / 有效行 0**：多为图框比例不同。先看 `inspect` 的「比例」
+  是否接近 0.5 / 1.0；若比例正常仍串列，再按 `references/layout.md` 调整
+  `_column_bounds()` 的各列偏移系数。
+- **行数与成品对不上**：成品常人工插入施工图独有项、合并重复的分组标题，
+  或采用另一版次的数量。先看 `--report` 里 `extras` 的分组分布，再决定是否改用
+  `--row-base design` / `merged`；不要用成品差异反推解析参数。
 - **阶段识别为「未标注」**：图签里没有「施工图/竣工图」文字，用
   `--asbuilt-tables` 手动选表。
 - **CAD 弹窗卡住**：脚本已设置 `Visible=False`；若 CAD 弹字体替换对话框，

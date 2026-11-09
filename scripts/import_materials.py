@@ -11,9 +11,11 @@
   2-汇总：    C 物料描述 | D 单位 | E 竣工数量 | I 施工图数量
               A 编号沿用模板、B 标记与 F/G 领退量不动，H/J/K/L/M/N 全部保留模板公式
 
-匹配规则：以竣工行顺序为基准，在施工图同分组内按物料描述精确匹配并「消耗」，
-因此同名物料出现在不同分组时不会互相串位。竣工图中施工图没有的条目，
-仍写入描述与单位，数量留空（与成品模板一致）。
+匹配规则：默认以竣工行顺序为基准（--row-base design 可改为施工图行序），
+在同分组内按物料描述精确匹配并「消耗」，同名物料跨分组不会串位；
+同组未命中而全表只剩唯一同名项时允许回退匹配。未匹配项仍写描述与单位、数量留空。
+竣工图 DWG 常附带完整的多页施工图版材料表，会自动补充到施工图数据源
+（--no-supplement 可关闭），避免单独给的施工图 DWG 只是局部版次时漏项。
 
 写入引擎使用本机 Excel COM：先复制模板文件再打开写入，
 从而完整保留原模板的所有工作表、公式、定义名、宏与打印设置。
@@ -26,10 +28,12 @@ CLI：
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
 import os
 import shutil
 import sys
+import tempfile
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -59,8 +63,37 @@ def resolve_template(value):
 # --------------------------------------------------------------------------- #
 # 匹配
 # --------------------------------------------------------------------------- #
+def _find_cand(pool, used, key, group, mode):
+    """group：严格同分组；global：忽略分组；hybrid：先同组再全局。"""
+    if mode in ("group", "hybrid"):
+        for i, d in enumerate(pool):
+            if i in used or d["is_header"]:
+                continue
+            if norm_desc(d["desc"]) == key and norm_desc(d["group"]) == group:
+                return i
+    if mode in ("global", "hybrid"):
+        for i, d in enumerate(pool):
+            if i in used or d["is_header"]:
+                continue
+            if norm_desc(d["desc"]) == key:
+                return i
+    return None
+
+
+def _stats(asbuilt, design, out, extras):
+    return {
+        "asbuilt_rows": len(asbuilt),
+        "asbuilt_items": sum(1 for r in asbuilt if not r["is_header"]),
+        "design_rows": len(design),
+        "design_items": sum(1 for r in design if not r["is_header"]),
+        "matched": sum(1 for r in out if r["matched"]),
+        "unmatched": sum(1 for r in out if r["matched"] is False),
+        "design_extras": len(extras),
+    }
+
+
 def match_rows(asbuilt, design, mode="group"):
-    """返回 (写入行列表, 施工图多余项列表, 统计)。"""
+    """以竣工图材料表行顺序为基准（默认）。"""
     used = set()
     out = []
     for a in asbuilt:
@@ -73,23 +106,7 @@ def match_rows(asbuilt, design, mode="group"):
                 "is_header": True, "group": a["group"], "matched": None,
             })
             continue
-
-        cand = None
-        if mode in ("group", "hybrid"):
-            for i, d in enumerate(design):
-                if i in used or d["is_header"]:
-                    continue
-                if norm_desc(d["desc"]) == key and norm_desc(d["group"]) == norm_desc(a["group"]):
-                    cand = i
-                    break
-        if cand is None and mode in ("global", "hybrid"):
-            for i, d in enumerate(design):
-                if i in used or d["is_header"]:
-                    continue
-                if norm_desc(d["desc"]) == key:
-                    cand = i
-                    break
-
+        cand = _find_cand(design, used, key, norm_desc(a["group"]), mode)
         if cand is not None:
             used.add(cand)
             d = design[cand]
@@ -103,16 +120,160 @@ def match_rows(asbuilt, design, mode="group"):
             "is_header": False, "group": a["group"], "matched": cand is not None,
         })
     extras = [d for i, d in enumerate(design) if i not in used and not d["is_header"]]
-    stats = {
-        "asbuilt_rows": len(asbuilt),
-        "asbuilt_items": sum(1 for r in asbuilt if not r["is_header"]),
-        "design_rows": len(design),
-        "design_items": sum(1 for r in design if not r["is_header"]),
-        "matched": sum(1 for r in out if r["matched"]),
-        "unmatched": sum(1 for r in out if r["matched"] is False),
-        "design_extras": len(extras),
-    }
-    return out, extras, stats
+    return out, extras, _stats(asbuilt, design, out, extras)
+
+
+def match_rows_design_base(asbuilt, design, mode="group"):
+    """
+    以施工图材料表行顺序为基准：竣工数量回填到 E；施工图独有项 C 列照写、E 留空；
+    竣工独有项追加到表尾、L 留空。适用于成品按施工图清单编排的项目。
+    """
+    used = set()
+    out = []
+    # 多页续表常重复同一分组标题（如两页都以「低压地上材料：」开头），
+    # 只保留最后一次出现，避免比对表里出现多余空标题行。
+    last_header = {}
+    for i, d in enumerate(design):
+        if d["is_header"]:
+            last_header[norm_desc(d["desc"])] = i
+    for i, d in enumerate(design):
+        key = norm_desc(d["desc"])
+        if d["is_header"]:
+            if last_header.get(key) != i:
+                continue
+            out.append({
+                "seq": len(out) + 1,
+                "a_desc": d["desc"], "a_unit": "", "a_qty": None,
+                "j_desc": d["desc"], "k_unit": "", "l_qty": None,
+                "is_header": True, "group": d["group"], "matched": None,
+            })
+            continue
+        cand = _find_cand(asbuilt, used, key, norm_desc(d["group"]), mode)
+        if cand is not None:
+            used.add(cand)
+            a = asbuilt[cand]
+            a_desc, a_unit, a_qty = a["desc"], a["unit"], a["qty"]
+        else:
+            a_desc, a_unit, a_qty = d["desc"], d["unit"], None
+        out.append({
+            "seq": len(out) + 1,
+            "a_desc": a_desc, "a_unit": a_unit, "a_qty": a_qty,
+            "j_desc": d["desc"], "k_unit": d["unit"], "l_qty": d["qty"],
+            "is_header": False, "group": d["group"], "matched": cand is not None,
+        })
+    extras = []
+    for i, a in enumerate(asbuilt):
+        if i in used or a["is_header"]:
+            continue
+        extras.append(a)
+        out.append({
+            "seq": len(out) + 1,
+            "a_desc": a["desc"], "a_unit": a["unit"], "a_qty": a["qty"],
+            "j_desc": a["desc"], "k_unit": a["unit"], "l_qty": None,
+            "is_header": False, "group": a["group"], "matched": None,
+            "appended": True,
+        })
+    return out, extras, _stats(asbuilt, design, out, extras)
+
+
+def _row_key(r):
+    return ("H:" if r["is_header"] else "D:") + norm_desc(r["desc"])
+
+
+def _dedupe_headers(rows):
+    """多页续表重复同一分组标题时，只保留最后一次出现。"""
+    last = {}
+    for i, r in enumerate(rows):
+        if r["is_header"]:
+            last[norm_desc(r["desc"])] = i
+    return [r for i, r in enumerate(rows)
+            if not r["is_header"] or last.get(norm_desc(r["desc"])) == i]
+
+
+def match_rows_merged(asbuilt, design, mode="group"):
+    """
+    以施工图序列为骨架，用序列对齐把竣工独有项插回它在竣工表中的相对位置，
+    得到「两表并集、各自保持原顺序」的行序。适用于成品按并集人工编排的项目。
+    """
+    asbuilt = _dedupe_headers(asbuilt)
+    design = _dedupe_headers(design)
+    ak = [_row_key(r) for r in asbuilt]
+    dk = [_row_key(r) for r in design]
+    sm = difflib.SequenceMatcher(None, dk, ak, autojunk=False)
+    out, extras = [], []
+
+    def emit(d=None, a=None):
+        if d is not None and a is not None:
+            h = d["is_header"] or a["is_header"]
+            out.append({
+                "seq": len(out) + 1,
+                "a_desc": d["desc"] if h else a["desc"],
+                "a_unit": "" if h else a["unit"], "a_qty": None if h else a["qty"],
+                "j_desc": d["desc"], "k_unit": "" if h else d["unit"],
+                "l_qty": None if h else d["qty"],
+                "is_header": h, "group": d["group"] or a["group"],
+                "matched": None if h else True,
+            })
+        elif d is not None:
+            h = d["is_header"]
+            out.append({
+                "seq": len(out) + 1,
+                "a_desc": d["desc"], "a_unit": "" if h else d["unit"], "a_qty": None,
+                "j_desc": d["desc"], "k_unit": "" if h else d["unit"],
+                "l_qty": None if h else d["qty"],
+                "is_header": h, "group": d["group"],
+                "matched": None if h else False,
+            })
+        else:
+            h = a["is_header"]
+            extras.append(a)
+            out.append({
+                "seq": len(out) + 1,
+                "a_desc": a["desc"], "a_unit": "" if h else a["unit"],
+                "a_qty": None if h else a["qty"], "j_desc": a["desc"],
+                "k_unit": "" if h else a["unit"], "l_qty": None,
+                "is_header": h, "group": a["group"],
+                "matched": None, "appended": True,
+            })
+
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "equal":
+            for k in range(i2 - i1):
+                emit(design[i1 + k], asbuilt[j1 + k])
+        else:
+            for d in design[i1:i2]:
+                emit(d=d)
+            for a in asbuilt[j1:j2]:
+                emit(a=a)
+    return out, extras, _stats(asbuilt, design, out, extras)
+
+
+def merge_design_rows(primary, extra):
+    """
+    竣工图 DWG 常附带完整的多页「施工图版工艺设备材料表」，
+    而单独给的施工图 DWG 有时只是某个版次/局部。把附带的施工图表
+    作为补充数据源，按描述去重（primary 优先），避免施工图侧漏项。
+    """
+    seen = {norm_desc(r["desc"]) for r in primary if not r["is_header"]}
+    group_of = {}
+    for r in primary:
+        if not r["is_header"]:
+            group_of.setdefault(norm_desc(r["desc"]), r.get("group", ""))
+    out = list(primary)
+    added = 0
+    for r in extra:
+        if r["is_header"]:
+            continue
+        key = norm_desc(r["desc"])
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        item = dict(r)
+        if key in group_of:
+            item["group"] = group_of[key]
+        out.append(item)
+        added += 1
+    return out, added
 
 
 # --------------------------------------------------------------------------- #
@@ -246,6 +407,13 @@ def main(argv=None):
     p.add_argument("--asbuilt-tables", type=_ids, default=None)
     p.add_argument("--design-tables", type=_ids, default=None)
     p.add_argument("--match-mode", default="group", choices=("group", "global", "hybrid"))
+    p.add_argument("--row-base", default="asbuilt",
+                   choices=("asbuilt", "design", "merged"),
+                   help="输出行序基准：asbuilt（默认，按竣工图表）/ "
+                        "design（按施工图表，竣工独有追加表尾）/ "
+                        "merged（两表并集，独有项按各自原顺序交错插入）")
+    p.add_argument("--no-supplement", action="store_true",
+                   help="不从竣工图 DWG 附带的施工图版材料表补充施工图数据")
     p.add_argument("--template", default="summary",
                    help="模板：summary（默认，空白加强比对版汇总模板）/ "
                         "sample（IC24H201 成品模板，用于复现验收）/ 任意 .xls 路径")
@@ -262,22 +430,54 @@ def main(argv=None):
     if not (args.design_rows or args.design_path or args.design_cache):
         p.error("需要 --design 或 --design-rows / --design-cache")
 
+    # 施工图补充要复用竣工图实体缓存，避免重复启动 CAD
+    if (not args.no_supplement and args.asbuilt_path and not args.asbuilt_rows
+            and not args.asbuilt_cache and not args.asbuilt_save_cache):
+        args.asbuilt_save_cache = os.path.join(tempfile.gettempdir(),
+                                              "dwg_asbuilt_entities.json")
+
     asbuilt = _rows_from_source(args, "asbuilt")
     design = _rows_from_source(args, "design")
-    rows, extras, stats = match_rows(asbuilt, design, mode=args.match_mode)
 
-    print("竣工图：%d 行（材料 %d 项） | 施工图：%d 行（材料 %d 项）" % (
-        stats["asbuilt_rows"], stats["asbuilt_items"],
+    supplement_added = 0
+    if not args.no_supplement:
+        cache = args.asbuilt_cache or args.asbuilt_save_cache
+        if cache and os.path.isfile(cache):
+            try:
+                extra = extract_rows(args.asbuilt_path or "drawing",
+                                     from_json=cache, stage="施工图")["rows"]
+                # 只取施工图阶段的表，防止「未标注阶段」回退时把竣工表混进来
+                extra = [r for r in extra if r.get("stage") == "施工图"]
+                design, supplement_added = merge_design_rows(design, extra)
+                if supplement_added:
+                    print("施工图补充：从竣工图 DWG 附带的施工图版材料表补入 %d 项"
+                          % supplement_added)
+            except Exception as exc:                       # noqa: BLE001
+                print("施工图补充跳过：%s" % str(exc)[:120])
+
+    design_base = args.row_base in ("design", "merged")
+    matcher = {"asbuilt": match_rows, "design": match_rows_design_base,
+               "merged": match_rows_merged}[args.row_base]
+    rows, extras, stats = matcher(asbuilt, design, mode=args.match_mode)
+    stats["row_base"] = args.row_base
+    stats["supplement_added"] = supplement_added
+
+    print("行序基准：%s | 竣工图 %d 行（材料 %d 项） | 施工图 %d 行（材料 %d 项）" % (
+        args.row_base, stats["asbuilt_rows"], stats["asbuilt_items"],
         stats["design_rows"], stats["design_items"]))
-    print("写入 %d 行；匹配到施工图数量 %d 项；竣工图独有 %d 项；施工图多余 %d 项" % (
-        len(rows), stats["matched"], stats["unmatched"], stats["design_extras"]))
+    print("写入 %d 行；匹配 %d 项；%s %d 项；%s %d 项" % (
+        len(rows), stats["matched"],
+        "施工图独有" if design_base else "竣工图独有", stats["unmatched"],
+        "竣工独有" if design_base else "施工图多余", stats["design_extras"]))
     if stats["unmatched"]:
-        print("\n[竣工图独有（施工图数量留空）]")
+        print("\n[%s]" % ("施工图独有（竣工数量 E 留空，已写入）" if design_base
+                          else "竣工图独有（施工图数量留空）"))
         for r in rows:
             if r["matched"] is False:
                 print("  -", r["a_desc"].replace("\n", " / ")[:60])
     if extras:
-        print("\n[施工图多出（未写入，通常是户内材料，需人工确认是否参与平差）]")
+        print("\n[%s]" % ("竣工独有（已写入，施工图数量留空）" if design_base
+                          else "施工图多出（未写入，通常是户内材料，需人工确认是否参与平差）"))
         for d in extras[:20]:
             print("  -", d["desc"].replace("\n", " / ")[:60], d["unit"], d["qty"])
         if len(extras) > 20:
