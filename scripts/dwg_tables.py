@@ -40,8 +40,12 @@ if hasattr(sys.stdout, "reconfigure"):
     except Exception:                          # noqa: BLE001
         pass
 
-HEADER_KEYS = ("序号", "物料描述", "单位", "数量", "标准号现行", "备注")
+HEADER_KEYS = ("序号", "物料描述", "名称", "规格", "单位", "数量",
+               "标准号现行", "备注")
 REQUIRED_HEADERS = ("序号", "物料描述", "单位", "数量")
+# 2026 年新图框：表头为「序号 / 标准号或图号 / 名称 / 规格 / 单位 / 数量」，
+# 另有一行「材料 / 质量(kg)」；物料描述拆成「名称 + 规格 + 材料」三列。
+NEW_LAYOUT_HEADERS = ("序号", "名称", "单位", "数量")
 # 参考图框「序号→单位」两个表头锚点的间距（图形单位）。
 # 不同设计院/不同比例出图会整体缩放，所有固定偏移与容差都按此比例换算，
 # 这样同一套算法可同时处理 1:1 图框与 1:2 缩放图框（实测 NC25D007 / ID24E107）。
@@ -267,8 +271,11 @@ def detect_tables(ents):
             matches = [e for e in near if norm_header(e["t"]) == key]
             if matches:
                 anchors[key] = min(matches, key=lambda e: abs(e["x"] - c["x"]))["x"]
-        if all(k in anchors for k in REQUIRED_HEADERS):
-            headers.append({"y": c["y"], "anchors": anchors})
+        old_ok = all(k in anchors for k in REQUIRED_HEADERS)
+        new_ok = all(k in anchors for k in NEW_LAYOUT_HEADERS)
+        if old_ok or new_ok:
+            headers.append({"y": c["y"], "anchors": anchors,
+                            "layout": "old" if old_ok else "name-spec"})
     # 同一图纸中的多页：先按表头 y 降序（上下并排时上页在前），
     # 同一水平线再按 x 升序（左右并排时左页在前）。
     headers.sort(key=lambda h: (-round(h["y"] / 1000), h["anchors"]["序号"]))
@@ -298,9 +305,10 @@ def detect_tables(ents):
             "header_y": h["y"],
             "anchors": a,
             "scale": sc,
+            "layout": h.get("layout", "old"),
             "x_left": x_left,
             "x_right": x_right,
-            "bounds": _column_bounds(a, x_left, x_right, sc),
+            "bounds": _column_bounds(a, x_left, x_right, sc, h.get("layout", "old")),
             "stage": detect_stage(ents, h, x_left, x_right, sc),
             "title": detect_title(ents, h, x_left, x_right, sc),
         }
@@ -324,28 +332,48 @@ def detect_tables(ents):
     return tables
 
 
-def _column_bounds(a, x_left, x_right, scale=1.0):
+def _column_bounds(a, x_left, x_right, scale=1.0, layout="old"):
     """
     列边界。
 
     注意：CAD 表头文字常居中排版（如 " 物   料   描   述 " 带大量前导空格），
     其插入点 x 明显右于同列数据文字，不能直接用表头锚点的中点切列。
-    这里以「序号/单位/数量」三个稳定锚点加固定偏移定界；所有偏移按
-    scale（本图框相对参考图框的缩放比例）换算，从而兼容不同比例出图。
-    例：参考图框偏移 600，1:2 缩放图框应取 300，否则整列文字会串位。
+    这里以稳定表头锚点加固定偏移定界；所有偏移按 scale（本图框相对参考
+    图框的缩放比例）换算，兼容不同比例出图。
+
+    layout="name-spec" 对应 2026 年新图框：物料描述拆成「名称 / 规格 /
+    材料」三列，表头还多一列「标准号或图号」，列序与旧图框完全不同。
     """
     seq, unit, qty = a["序号"], a["单位"], a["数量"]
-    std = a.get("标准号现行", qty + 2500 * scale)
-    note = a.get("备注", std + 2800 * scale)
-    b = {
-        "序号": (x_left, seq + 600 * scale),
-        "物料描述": (seq + 600 * scale, unit - 1500 * scale),
-        "单位": (unit - 1500 * scale, qty - 600 * scale),
-        "数量": (qty - 600 * scale, qty + 700 * scale),
-        "标准号现行": (qty + 700 * scale, note - 1500 * scale),
-        "备注": (note - 1500 * scale, x_right),
-    }
-    return {k: v for k, v in b.items() if k in a or k in REQUIRED_HEADERS}
+    if layout == "name-spec":
+        std = a.get("标准号现行", seq + 1000 * scale)
+        name = a.get("名称", std + 2500 * scale)
+        spec = a.get("规格", name + 2200 * scale)
+        mat = a.get("材料", spec + 2500 * scale)
+        note = a.get("备注", qty + 2500 * scale)
+        b = {
+            "序号": (x_left, std - 400 * scale),
+            "标准号现行": (std - 400 * scale, name - 1200 * scale),
+            "名称": (name - 1200 * scale, spec - 1200 * scale),
+            "规格": (spec - 1200 * scale, mat - 1200 * scale),
+            "材料": (mat - 1200 * scale, unit - 400 * scale),
+            "单位": (unit - 400 * scale, qty - 300 * scale),
+            "数量": (qty - 300 * scale, note - 1200 * scale),
+            "备注": (note - 1200 * scale, x_right),
+        }
+    else:
+        std = a.get("标准号现行", qty + 2500 * scale)
+        note = a.get("备注", std + 2800 * scale)
+        b = {
+            "序号": (x_left, seq + 600 * scale),
+            "物料描述": (seq + 600 * scale, unit - 1500 * scale),
+            "单位": (unit - 1500 * scale, qty - 600 * scale),
+            "数量": (qty - 600 * scale, qty + 700 * scale),
+            "标准号现行": (qty + 700 * scale, note - 1500 * scale),
+            "备注": (note - 1500 * scale, x_right),
+        }
+    keep = set(REQUIRED_HEADERS) | {"名称", "规格", "材料"}
+    return {k: v for k, v in b.items() if k in a or k in keep}
 
 
 def detect_stage(ents, header, x_left, x_right, scale=1.0):
@@ -477,10 +505,18 @@ def parse_table(ents, table):
                     break
         seqs = [t for t in cols.get("序号", []) if re.fullmatch(r"\d{1,3}", t)]
         ln["seq"] = int(seqs[0]) if seqs and not ln["is_header_line"] else None
-        ln["descs"] = [] if ln["is_header_line"] else [
-            t for t in cols.get("物料描述", [])
-            if len(t) >= 2 and not re.fullmatch(r"[\d.\s]+", t)
-            and not _is_sign_text(t)]
+        if ln["is_header_line"]:
+            ln["descs"] = []
+        elif table.get("layout") == "name-spec":
+            # 新图框：名称 + 规格 + 材料 三列拼成一条物料描述
+            ln["descs"] = [t for key in ("名称", "规格", "材料")
+                           for t in cols.get(key, [])
+                           if len(t) >= 2 and not re.fullmatch(r"[\d.\s]+", t)
+                           and not _is_sign_text(t)]
+        else:
+            ln["descs"] = [t for t in cols.get("物料描述", [])
+                           if len(t) >= 2 and not re.fullmatch(r"[\d.\s]+", t)
+                           and not _is_sign_text(t)]
         units = [] if ln["is_header_line"] else [t for t in cols.get("单位", []) if _valid_unit(t)]
         ln["unit"] = units[0] if units else ""
         qtys = [] if ln["is_header_line"] else [
@@ -519,7 +555,13 @@ def parse_table(ents, table):
             extra = [seg_lines[i] for i, j in owner.items() if j == idx]
             group = [anchor] + extra
             group.sort(key=lambda l: -l["y"])       # 描述按视觉从上到下拼接
-            desc = "\n".join(d for ln in group for d in ln["descs"]).strip()
+            if table.get("layout") == "name-spec":
+                # 新图框的名称/规格里常有空格（如「Q11F-16T DN25 n4」），
+                # 统一换成下划线，与旧图框的物料描述格式一致。
+                desc = "_".join(re.sub(r"\s+", "_", d)
+                                for ln in group for d in ln["descs"]).strip()
+            else:
+                desc = "\n".join(d for ln in group for d in ln["descs"]).strip()
             if not desc:
                 continue
             unit = anchor["unit"] or next((ln["unit"] for ln in extra if ln["unit"]), "")

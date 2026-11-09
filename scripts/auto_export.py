@@ -400,6 +400,9 @@ def main(argv=None):
             design = []
             for i in sg:
                 design.extend(rows_of(i, "施工图"))
+            if not design:
+                print("  [提示] %s：施工图文件未检测到材料表，施工图数量将全部留空；"
+                      "请确认施工图是否为最终版。" % base)
 
         base_mode = (choose_row_base(asbuilt, design, single)
                      if args.row_base == "auto" else args.row_base)

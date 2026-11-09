@@ -410,6 +410,8 @@ def main(argv=None):
     # 施工图数据只取用户发送的施工图文件；竣工图 DWG 里残留的施工图版材料表一律忽略
     asbuilt = _rows_from_source(args, "asbuilt")
     design = _rows_from_source(args, "design")
+    if not design:
+        print("提示：施工图资料未提取到材料表，施工图数量将全部留空（请确认施工图文件）。")
 
     design_base = args.row_base in ("design", "merged")
     matcher = {"asbuilt": match_rows, "design": match_rows_design_base,
