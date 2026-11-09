@@ -136,6 +136,39 @@ python scripts/import_materials.py --asbuilt "竣工图.dwg" --design "施工图
 `--no-supplement`、`--asbuilt-tables 1`、`--dry-run`。
 完整说明见 [SKILL.md](SKILL.md) 与 [references/layout.md](references/layout.md)。
 
+### 批量处理：拖入文件夹（可脱离 AI 运行）
+
+**方式 A：交给 AI** —— 把整个文件夹路径发给 AI，说「处理这个文件夹里的图纸」：
+
+```bash
+python scripts/auto_export.py "D:/2026结算图纸" --out-dir "D:/输出"
+```
+
+脚本递归扫描文件夹内所有 `.dwg` / `.dxf`（`--no-recursive` 只扫顶层），
+自动判别竣工/施工图、按工程分组，一次生成多个工程的平差表。
+拖入文件夹且未指定 `--out-dir` 时，默认输出到该文件夹下的 `材料平差输出/`。
+支持一次传入多个文件夹，也支持文件夹与单张图纸混合；
+分层目录（如 `工程A/竣工图/`、`工程A/施工图/`）同样能正确判别。
+
+**方式 B：完全脱离 AI** —— 把文件夹（或多个文件夹、若干 `.dwg`）直接拖到
+技能根目录的 **`run_batch.bat`** 图标上：
+
+- 自动定位 Python 3（优先 `py -3`，其次 `python`），缺失时提示安装
+- 自动检查并安装 `pywin32`
+- 自动启用实体缓存 `%USERPROFILE%\.workbuddy\dwg-entity-cache`；
+  **DWG 被修改后缓存自动失效并重读**，不会用到过期数据
+- 结果写入拖入文件夹下的 `材料平差输出/`，完整日志见技能目录 `run_batch.log`
+- 结束暂停显示结果；无人值守可设 `DWG_BATCH_NOPAUSE=1`
+
+| 环境变量 | 作用 |
+|---|---|
+| `DWG_BATCH_NOPAUSE=1` | 结束不暂停（计划任务 / 脚本调用） |
+| `DWG_BATCH_DRYRUN=1` | 只打印计划，不写 `.xls` |
+| `DWG_BATCH_NOCACHE=1` | 每次都从 CAD 重新读取 |
+
+只需 Windows + Python 3 + 浩辰/AutoCAD/中望 CAD + Microsoft Excel，
+**不需要 WorkBuddy 或任何 AI**。
+
 ### 多实例验证与行序基准（v1.2.0）
 
 已在三个真实工程上回归：
@@ -197,6 +230,7 @@ dwg-material-to-xls/
 ├── install.py                     # 一键安装（纯标准库）
 ├── update.py                      # 版本检查与升级
 ├── release.py                     # 维护者发布
+├── run_batch.bat                  # 拖入文件夹即可运行（脱离 AI）
 ├── scripts/
 │   ├── auto_export.py             # 默认入口：若干 DWG 自动判别、分组、命名、生成
 │   ├── dwg_tables.py              # DWG 文字提取、材料表识别（inspect / extract）
@@ -228,6 +262,7 @@ dwg-material-to-xls/
 
 | 版本 | 日期 | 内容 |
 |---|---|---|
+| 1.4.0 | 2026-11-10 | `auto_export.py` 支持文件夹拖入（递归扫描、多工程批量、默认输出到「材料平差输出」）；新增 `run_batch.bat` 可脱离 AI 拖放运行（自动找 Python/装 pywin32、缓存按图纸修改时间失效、运行日志）；控制台编码与 CAD 实例复用优化 |
 | 1.3.0 | 2026-11-10 | 新增 `auto_export.py` 默认入口：若干 DWG 自动判别竣工/施工图、按工程分组、按「编号+名称」命名、单竣工图时施工图量=竣工图量、行序自动选择；整批复用一个 CAD 实例并支持实体缓存 |
 | 1.2.0 | 2026-11-10 | 两个新工程实例验证：图框比例自适应、缺图签多页阶段继承与页序修正、施工图数据自动补充、`--row-base` 三种行序基准；三实例均通过回归 |
 | 1.1.0 | 2026-11-10 | 内置「70623加强比对版」汇总模板为默认底稿，自动同步 `2-汇总` / 打印版 / 变更估价；模板容量自动探测 |

@@ -4,16 +4,20 @@
 「发若干 DWG 给 AI，说导出材料表」时使用的一键编排入口。
 
     python auto_export.py "竣工图.dwg" "施工图.dwg" ... [--out-dir DIR]
+    python auto_export.py "拖入的文件夹"                 # 递归扫描文件夹内所有 DWG
+    python auto_export.py "文件夹A" "文件夹B" *.dwg     # 目录与文件可混合
     python auto_export.py "只有一张竣工图.dwg" --out-dir DIR
     python auto_export.py <多个DWG> --cache-dir _cache --dry-run
 
 自动完成：
-  1. 读取每张 DWG 的文字实体（--cache-dir 可复用缓存，不重复启动 CAD）；
-  2. 按目录/文件名、材料表图签阶段、图签文字判别「竣工图 / 施工图」；
-  3. 按工程编号分组（无编号的施工图按名称相似度并入对应工程）；
-  4. 从图签或文件名提取「工程编号 + 工程名称」，输出 `<编号>+<名称>.xls`；
-  5. 只有竣工图时，施工图量 = 竣工图量（J/K/L 与 C/D/E 相同，O 列显示「相同」）；
-  6. 自动选择行序基准（见 choose_row_base），写入 `1-初步比对` 与 `2-汇总`。
+  1. 把文件夹参数递归展开成图纸清单（--no-recursive 只扫顶层）；
+  2. 读取每张 DWG 的文字实体（--cache-dir 可复用缓存，整批只启动一次 CAD）；
+  3. 按目录/文件名、材料表图签阶段、图签文字判别「竣工图 / 施工图」；
+  4. 按工程编号分组（无编号的施工图按名称相似度并入对应工程）；
+  5. 从图签或文件名提取「工程编号 + 工程名称」，输出 `<编号>+<名称>.xls`；
+     拖入文件夹时默认输出到该文件夹下的「材料平差输出」；
+  6. 只有竣工图时，施工图量 = 竣工图量（J/K/L 与 C/D/E 相同，O 列显示「相同」）；
+  7. 自动选择行序基准（见 choose_row_base），写入 `1-初步比对` 与 `2-汇总`。
 """
 from __future__ import annotations
 
@@ -25,7 +29,12 @@ import re
 import sys
 
 if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8")
+    try:
+        # 跟随控制台编码（CMD 中文代码页 / UTF-8 终端），避免批处理输出乱码
+        sys.stdout.reconfigure(encoding=sys.stdout.encoding or "utf-8",
+                               errors="replace")
+    except Exception:                          # noqa: BLE001
+        pass
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from dwg_tables import (  # noqa: E402
@@ -54,6 +63,51 @@ def clean_filename(s):
 def cache_path(dwg, cache_dir):
     stem = os.path.splitext(os.path.basename(dwg))[0]
     return os.path.join(cache_dir, clean_filename(stem) + ".json")
+
+
+def cache_is_fresh(dwg, cache_dir):
+    """缓存必须比 DWG 新；图纸被改动时自动重读，避免批处理用到过期数据。"""
+    if not cache_dir:
+        return False
+    cp = cache_path(dwg, cache_dir)
+    return os.path.isfile(cp) and os.path.getmtime(cp) >= os.path.getmtime(dwg)
+
+
+def expand_inputs(items, recursive=True):
+    """把文件夹参数递归展开为 DWG/DXF 清单；文件参数原样保留，并去重保序。"""
+    out = []
+    for item in items:
+        p = os.path.abspath(item)
+        if os.path.isfile(p):
+            if p.lower().endswith((".dwg", ".dxf")):
+                out.append(p)
+            continue
+        if not os.path.isdir(p):
+            print("[跳过] 路径不存在：%s" % item)
+            continue
+        found = []
+        if recursive:
+            for root, dirs, names in os.walk(p):
+                dirs[:] = [d for d in dirs
+                           if not d.startswith((".", "~$")) and d != "材料平差输出"]
+                for n in names:
+                    if n.lower().endswith((".dwg", ".dxf")) and not n.startswith("~$"):
+                        found.append(os.path.join(root, n))
+        else:
+            for n in os.listdir(p):
+                fp = os.path.join(p, n)
+                if os.path.isfile(fp) and n.lower().endswith((".dwg", ".dxf")) \
+                        and not n.startswith("~$"):
+                    found.append(fp)
+        print("  文件夹 %s -> %d 张图纸" % (p, len(found)))
+        out.extend(sorted(found))
+    seen, uniq = set(), []
+    for f in out:
+        key = os.path.normcase(f)
+        if key not in seen:
+            seen.add(key)
+            uniq.append(f)
+    return uniq
 
 
 def _label_value(ents, labels, max_len=60):
@@ -134,7 +188,7 @@ def load_drawing(path, cache_dir, app=None):
     if cache_dir:
         os.makedirs(cache_dir, exist_ok=True)
         cp = cache_path(path, cache_dir)
-        if os.path.isfile(cp):
+        if cache_is_fresh(path, cache_dir):
             ents, meta = load_entities(path, from_json=cp)
         else:
             ents, meta = load_entities(path, cache=cp, app=app)
@@ -241,8 +295,12 @@ def choose_row_base(asbuilt, design, single):
 
 def main(argv=None):
     p = argparse.ArgumentParser(description="若干 DWG -> 自动判别并生成材料平差 xls")
-    p.add_argument("dwgs", nargs="+", help="任意数量的 DWG/DXF 图纸")
-    p.add_argument("--out-dir", default=os.getcwd(), help="输出目录（默认当前目录）")
+    p.add_argument("dwgs", nargs="+",
+                   help="DWG/DXF 文件或含图纸的文件夹（可多个、可混合；支持直接拖入）")
+    p.add_argument("--out-dir", default=None,
+                   help="输出目录；省略且拖入文件夹时输出到该文件夹下的「材料平差输出」")
+    p.add_argument("--no-recursive", action="store_true",
+                   help="只扫描文件夹顶层，不递归子目录")
     p.add_argument("--cache-dir", default=None, help="实体缓存目录，可复用避免重复读 CAD")
     p.add_argument("--template", default="summary",
                    help="summary（默认）/ sample / 任意 .xls 路径")
@@ -256,25 +314,39 @@ def main(argv=None):
     p.add_argument("--dry-run", action="store_true", help="只打印判别与生成计划")
     args = p.parse_args(argv)
 
-    out_dir = os.path.abspath(args.out_dir)
+    # 文件夹参数递归展开成图纸清单（批处理拖入的核心入口）
+    raw_inputs = args.dwgs
+    print("输入路径：%d 个" % len(raw_inputs))
+    dwgs = expand_inputs(raw_inputs, recursive=not args.no_recursive)
+    if not dwgs:
+        print("未找到 .dwg / .dxf 文件，请检查拖入的文件夹。")
+        return 1
+    print("共展开 %d 张图纸" % len(dwgs))
+
+    if args.out_dir:
+        out_dir = os.path.abspath(args.out_dir)
+    else:
+        first_dir = next((os.path.abspath(x) for x in raw_inputs if os.path.isdir(x)), None)
+        out_dir = os.path.join(first_dir, "材料平差输出") if first_dir else os.getcwd()
     report_dir = os.path.abspath(args.report_dir or out_dir)
+    print("输出目录：%s" % out_dir)
     if not args.dry_run:
         os.makedirs(out_dir, exist_ok=True)
         os.makedirs(report_dir, exist_ok=True)
 
     # 只在确实需要读 DWG 时启动 CAD，并且整批只启动一次后复用
     need_cad = False
-    for path in args.dwgs:
+    for path in dwgs:
         if not os.path.isfile(path):
             continue
-        if args.cache_dir and os.path.isfile(cache_path(path, args.cache_dir)):
+        if cache_is_fresh(path, args.cache_dir):
             continue
         need_cad = True
         break
     app, owns = open_cad_app() if need_cad else (None, False)
     infos = []
     try:
-        for path in args.dwgs:
+        for path in dwgs:
             if not os.path.isfile(path):
                 print("[跳过] 文件不存在：%s" % path)
                 continue

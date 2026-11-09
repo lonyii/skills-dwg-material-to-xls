@@ -34,7 +34,11 @@ import sys
 import time
 
 if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8")
+    try:
+        sys.stdout.reconfigure(encoding=sys.stdout.encoding or "utf-8",
+                               errors="replace")
+    except Exception:                          # noqa: BLE001
+        pass
 
 HEADER_KEYS = ("序号", "物料描述", "单位", "数量", "标准号现行", "备注")
 REQUIRED_HEADERS = ("序号", "物料描述", "单位", "数量")

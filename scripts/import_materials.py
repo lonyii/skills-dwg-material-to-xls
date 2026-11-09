@@ -36,7 +36,11 @@ import sys
 import tempfile
 
 if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8")
+    try:
+        sys.stdout.reconfigure(encoding=sys.stdout.encoding or "utf-8",
+                               errors="replace")
+    except Exception:                          # noqa: BLE001
+        pass
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from dwg_tables import extract_rows, norm_desc  # noqa: E402

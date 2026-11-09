@@ -24,6 +24,8 @@ Excel COM 写入可完整保留模板的所有工作表、公式（如 O 列
 
 - **（首选）用户一次发来若干 `.dwg`，说「导出材料表 / 做材料平差 / 生成材料汇总」**——
   直接运行 `scripts/auto_export.py`，由脚本自动判别竣工图/施工图、按工程分组并命名输出
+- 用户给出/拖入一个**文件夹**（内含多个工程的竣工图与施工图），要求批量处理——
+  `auto_export.py` 支持目录参数递归扫描；无需 AI 时把文件夹拖到 `run_batch.bat` 上即可
 - 用户明确给出「竣工图」「施工图」两份 `.dwg`，需要精细控制时用 `import_materials.py`
 - 用户提到「材料平差」「1-初步比对」「2-汇总」「材料汇总表」「施工图/竣工图材料核对」「变更结算材料表」
 - 用户给出成品 `.xls` 模板或「加强比对版」汇总模板，要求按同样格式批量生成新项目的文件
@@ -42,7 +44,17 @@ Excel COM 写入可完整保留模板的所有工作表、公式（如 O 列
 
 ```bash
 python scripts/auto_export.py "图1.dwg" "图2.dwg" ... --out-dir "D:/输出"
+python scripts/auto_export.py "D:/2026结算图纸"      # 直接给文件夹，递归扫描
+python scripts/auto_export.py "文件夹A" "文件夹B"     # 多个文件夹混合
 ```
+
+文件夹模式：递归扫描其中所有 `.dwg/.dxf`（`--no-recursive` 只扫顶层），
+未指定 `--out-dir` 时输出到该文件夹下的 `材料平差输出/`；
+分层目录（`工程A/竣工图/`、`工程A/施工图/`）也能正确判别阶段。
+**脱离 AI 运行**：把文件夹直接拖到技能根目录的 `run_batch.bat` 上，
+批处理会自己找 Python、检查 `pywin32`、调用本脚本并把结果写进 `材料平差输出/`；
+实体缓存按 DWG 修改时间自动失效，日志见 `run_batch.log`。
+无人值守可设 `DWG_BATCH_NOPAUSE=1`，只预演可设 `DWG_BATCH_DRYRUN=1`。
 
 脚本自动完成：
 
@@ -62,7 +74,8 @@ python scripts/auto_export.py "图1.dwg" "图2.dwg" ... --out-dir "D:/输出"
 6. 默认用加强版汇总模板，写入 `1-初步比对` 并同步 `2-汇总`。
 
 常用参数：`--out-dir`、`--cache-dir`（复用实体缓存；批量读图只启动一次 CAD 实例）、
-`--dry-run`、`--row-base auto|asbuilt|design|merged`、`--template`、
+`--no-recursive`（只扫文件夹顶层）、`--dry-run`、
+`--row-base auto|asbuilt|design|merged`、`--template`、
 `--no-supplement`、`--no-fill-summary`。
 
 实测：6 张图（3 个工程各 1 竣工 + 1 施工）自动分成 3 组、生成 3 份
@@ -216,7 +229,8 @@ python scripts/import_materials.py --asbuilt "竣工图.dwg" --design "施工图
 
 ## 资源
 
-- `scripts/auto_export.py` — **默认入口**：若干 DWG 自动判别竣工/施工图、按工程分组、按「编号+名称」命名、单竣工图规则
+- `scripts/auto_export.py` — **默认入口**：若干 DWG / 文件夹自动判别竣工/施工图、按工程分组、按「编号+名称」命名、单竣工图规则
+- `run_batch.bat` — Windows 拖放批处理：脱离 AI 运行，自动定位 Python、装 `pywin32`、写运行日志
 - `scripts/dwg_tables.py` — DWG/DXF 文字提取、材料表识别与重建（含 inspect/extract 子命令）
 - `scripts/import_materials.py` — 分组匹配、核对报告、Excel 保真写入与 2-汇总同步
 - `references/layout.md` — 两套模板的列定义、汇总联动规则、CAD 识别规则与可调参数
