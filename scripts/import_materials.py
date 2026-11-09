@@ -12,10 +12,12 @@
               A 编号沿用模板、B 标记与 F/G 领退量不动，H/J/K/L/M/N 全部保留模板公式
 
 匹配规则：默认以竣工行顺序为基准（--row-base design 可改为施工图行序），
-在同分组内按物料描述精确匹配并「消耗」，同名物料跨分组不会串位；
-同组未命中而全表只剩唯一同名项时允许回退匹配。未匹配项仍写描述与单位、数量留空。
-竣工图 DWG 常附带完整的多页施工图版材料表，会自动补充到施工图数据源
-（--no-supplement 可关闭），避免单独给的施工图 DWG 只是局部版次时漏项。
+在同分组内按物料描述精确匹配并「消耗」，同名物料跨分组不会串位。
+未匹配项仍写描述与单位、数量留空。
+
+施工图数据源规则：竣工图 DWG 在编制时常保留施工图版材料表，那是旧版且不准确的数据，
+一律忽略；施工图数量只取用户发送的施工图文件。若用户只给了竣工图，
+则由 auto_export.py 按「施工图量=竣工图量」处理。
 
 写入引擎使用本机 Excel COM：先复制模板文件再打开写入，
 从而完整保留原模板的所有工作表、公式、定义名、宏与打印设置。
@@ -33,7 +35,6 @@ import json
 import os
 import shutil
 import sys
-import tempfile
 
 if hasattr(sys.stdout, "reconfigure"):
     try:
@@ -252,34 +253,6 @@ def match_rows_merged(asbuilt, design, mode="group"):
     return out, extras, _stats(asbuilt, design, out, extras)
 
 
-def merge_design_rows(primary, extra):
-    """
-    竣工图 DWG 常附带完整的多页「施工图版工艺设备材料表」，
-    而单独给的施工图 DWG 有时只是某个版次/局部。把附带的施工图表
-    作为补充数据源，按描述去重（primary 优先），避免施工图侧漏项。
-    """
-    seen = {norm_desc(r["desc"]) for r in primary if not r["is_header"]}
-    group_of = {}
-    for r in primary:
-        if not r["is_header"]:
-            group_of.setdefault(norm_desc(r["desc"]), r.get("group", ""))
-    out = list(primary)
-    added = 0
-    for r in extra:
-        if r["is_header"]:
-            continue
-        key = norm_desc(r["desc"])
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        item = dict(r)
-        if key in group_of:
-            item["group"] = group_of[key]
-        out.append(item)
-        added += 1
-    return out, added
-
-
 # --------------------------------------------------------------------------- #
 # 写 Excel
 # --------------------------------------------------------------------------- #
@@ -416,8 +389,8 @@ def main(argv=None):
                    help="输出行序基准：asbuilt（默认，按竣工图表）/ "
                         "design（按施工图表，竣工独有追加表尾）/ "
                         "merged（两表并集，独有项按各自原顺序交错插入）")
-    p.add_argument("--no-supplement", action="store_true",
-                   help="不从竣工图 DWG 附带的施工图版材料表补充施工图数据")
+    # 兼容旧命令：v1.5.0 起默认且强制忽略竣工图内的施工图材料表，此参数不再有作用
+    p.add_argument("--no-supplement", action="store_true", help=argparse.SUPPRESS)
     p.add_argument("--template", default="summary",
                    help="模板：summary（默认，空白加强比对版汇总模板）/ "
                         "sample（IC24H201 成品模板，用于复现验收）/ 任意 .xls 路径")
@@ -434,37 +407,16 @@ def main(argv=None):
     if not (args.design_rows or args.design_path or args.design_cache):
         p.error("需要 --design 或 --design-rows / --design-cache")
 
-    # 施工图补充要复用竣工图实体缓存，避免重复启动 CAD
-    if (not args.no_supplement and args.asbuilt_path and not args.asbuilt_rows
-            and not args.asbuilt_cache and not args.asbuilt_save_cache):
-        args.asbuilt_save_cache = os.path.join(tempfile.gettempdir(),
-                                              "dwg_asbuilt_entities.json")
-
+    # 施工图数据只取用户发送的施工图文件；竣工图 DWG 里残留的施工图版材料表一律忽略
     asbuilt = _rows_from_source(args, "asbuilt")
     design = _rows_from_source(args, "design")
-
-    supplement_added = 0
-    if not args.no_supplement:
-        cache = args.asbuilt_cache or args.asbuilt_save_cache
-        if cache and os.path.isfile(cache):
-            try:
-                extra = extract_rows(args.asbuilt_path or "drawing",
-                                     from_json=cache, stage="施工图")["rows"]
-                # 只取施工图阶段的表，防止「未标注阶段」回退时把竣工表混进来
-                extra = [r for r in extra if r.get("stage") == "施工图"]
-                design, supplement_added = merge_design_rows(design, extra)
-                if supplement_added:
-                    print("施工图补充：从竣工图 DWG 附带的施工图版材料表补入 %d 项"
-                          % supplement_added)
-            except Exception as exc:                       # noqa: BLE001
-                print("施工图补充跳过：%s" % str(exc)[:120])
 
     design_base = args.row_base in ("design", "merged")
     matcher = {"asbuilt": match_rows, "design": match_rows_design_base,
                "merged": match_rows_merged}[args.row_base]
     rows, extras, stats = matcher(asbuilt, design, mode=args.match_mode)
     stats["row_base"] = args.row_base
-    stats["supplement_added"] = supplement_added
+    stats["design_source"] = "用户施工图文件（竣工图内施工图材料表已忽略）"
 
     print("行序基准：%s | 竣工图 %d 行（材料 %d 项） | 施工图 %d 行（材料 %d 项）" % (
         args.row_base, stats["asbuilt_rows"], stats["asbuilt_items"],

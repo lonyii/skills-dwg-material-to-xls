@@ -18,6 +18,9 @@
      拖入文件夹时默认输出到该文件夹下的「材料平差输出」；
   6. 只有竣工图时，施工图量 = 竣工图量（J/K/L 与 C/D/E 相同，O 列显示「相同」）；
   7. 自动选择行序基准（见 choose_row_base），写入 `1-初步比对` 与 `2-汇总`。
+
+重要业务规则：竣工图 DWG 编制时常保留施工图版材料表，那是旧版且不准确的数据，
+一律忽略；施工图数据只取用户发送的施工图文件。
 """
 from __future__ import annotations
 
@@ -42,7 +45,7 @@ from dwg_tables import (  # noqa: E402
     norm_desc, open_cad_app, parse_table,
 )
 from import_materials import (  # noqa: E402
-    match_rows, match_rows_design_base, match_rows_merged, merge_design_rows,
+    match_rows, match_rows_design_base, match_rows_merged,
     resolve_template, write_xls,
 )
 
@@ -307,8 +310,8 @@ def main(argv=None):
     p.add_argument("--row-base", default="auto",
                    choices=("auto", "asbuilt", "design", "merged"))
     p.add_argument("--match-mode", default="group", choices=("group", "global", "hybrid"))
-    p.add_argument("--no-supplement", action="store_true",
-                   help="不从竣工图 DWG 附带的施工图版材料表补充施工图数据")
+    # 兼容旧命令：v1.5.0 起默认且强制忽略竣工图内的施工图材料表，此参数不再有作用
+    p.add_argument("--no-supplement", action="store_true", help=argparse.SUPPRESS)
     p.add_argument("--no-fill-summary", action="store_true", help="不同步 2-汇总")
     p.add_argument("--report-dir", default=None, help="核对报告目录（默认同输出目录）")
     p.add_argument("--dry-run", action="store_true", help="只打印判别与生成计划")
@@ -392,24 +395,18 @@ def main(argv=None):
         if single:
             design = [dict(r) for r in asbuilt]      # 施工图量 = 竣工图量
         else:
+            # 施工图数据只取用户发送的施工图文件；竣工图 DWG 内残留的
+            # 施工图版材料表是编制时留下的旧数据，一律忽略。
             design = []
             for i in sg:
                 design.extend(rows_of(i, "施工图"))
-            if not args.no_supplement:
-                extra = []
-                for i in ab:
-                    extra.extend(rows_of(i, "施工图"))
-                design, added = merge_design_rows(design, extra)
-            else:
-                added = 0
-        if not single and not args.no_supplement:
-            print("  %s：施工图补充 %d 项" % (base, added))
 
         base_mode = (choose_row_base(asbuilt, design, single)
                      if args.row_base == "auto" else args.row_base)
         rows, extras, stats = MATCHERS[base_mode](asbuilt, design, mode=args.match_mode)
         stats.update({"project_no": proj_no, "project_name": name,
                       "row_base": base_mode, "single_asbuilt": single,
+                      "design_source": "用户施工图文件（竣工图内施工图材料表已忽略）",
                       "drawings": [os.path.basename(i["path"]) for i in group]})
         print("  %s：竣工 %d 行 / 施工 %d 行 -> 写入 %d 行，行序=%s%s" % (
             base, len(asbuilt), len(design), len(rows), base_mode,

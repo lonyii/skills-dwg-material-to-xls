@@ -75,8 +75,10 @@ python scripts/auto_export.py "文件夹A" "文件夹B"     # 多个文件夹混
 
 常用参数：`--out-dir`、`--cache-dir`（复用实体缓存；批量读图只启动一次 CAD 实例）、
 `--no-recursive`（只扫文件夹顶层）、`--dry-run`、
-`--row-base auto|asbuilt|design|merged`、`--template`、
-`--no-supplement`、`--no-fill-summary`。
+`--row-base auto|asbuilt|design|merged`、`--template`、`--no-fill-summary`。
+
+> **施工图数据源规则**：竣工图 DWG 编制时常保留施工图版材料表，那是旧版且不准确的数据，
+> 一律忽略；施工图数量只取用户发送的施工图文件。仅有竣工图时按「施工图量=竣工图量」处理。
 
 实测：6 张图（3 个工程各 1 竣工 + 1 施工）自动分成 3 组、生成 3 份
 `编号+名称.xls`；只给 1 张竣工图时 73 行 E=L 全行一致。
@@ -128,7 +130,7 @@ python scripts/import_materials.py --asbuilt "竣工图.dwg" --design "施工图
 | 工程 | 图框 | 竣工 / 施工图材料表 | 推荐参数 | 与成品逐格比对 |
 |---|---|---|---|---|
 | IC24H201 向塘博乐美幼儿园 | 1:1 | 40 / 52 行 | 默认 `--row-base asbuilt --template sample --no-fill-summary` | A3:O43 共 410 格 **0 差异** |
-| NC25D007 天之益锅炉 | 1:1，竣工图两页（一页无图签） | 73 / 46 行，另从竣工图 DWG 补 59 项 | 默认 `--row-base asbuilt` | 提取正确；成品另含人工插入的 2 项施工图独有项与另一版次数量，需人工复核 |
+| NC25D007 天之益锅炉 | 1:1，竣工图两页（一页无图签） | 73 / 46 行（施工图只取用户文件） | 默认 `--row-base asbuilt` | 提取正确；成品另含人工插入的 2 项施工图独有项与另一版次数量，需人工复核 |
 | ID24E107 天天包子店 | **1:2 缩放** | 32 / 32 行 | `--row-base merged` | 41 行 **0 差异** |
 
 **比例自适应**：脚本按表头「序号→单位」锚点间距自动换算所有列偏移、
@@ -138,9 +140,9 @@ python scripts/import_materials.py --asbuilt "竣工图.dwg" --design "施工图
 **阶段与页序**：同一图框左右并排的多页表，按表头 y 降序、同排 x 升序拼接；
 缺图签阶段文字的一页，会继承邻近已标注页的「施工图 / 竣工图」。
 
-**施工图补充**：竣工图 DWG 常附带完整的多页「施工图版工艺设备材料表」，
-而单独给的施工图 DWG 有时只是某个版次/局部。脚本自动把附带的施工图表
-按描述去重补入施工图数据源（primary 优先），`--no-supplement` 可关闭。
+**施工图数据源（重要）**：竣工图 DWG 编制时常保留施工图版材料表，属于旧版且不准确的数据，
+脚本一律忽略；施工图数量只取用户发送的施工图文件。即使施工图文件只是某个局部版次，
+也不会拿竣工图里的旧表来补，避免把错误数量带进平差表。
 
 **行序基准** `--row-base`：
 
@@ -186,8 +188,8 @@ python scripts/import_materials.py --asbuilt "竣工图.dwg" --design "施工图
   不需要改常量；`inspect` 打印的「比例」应在 0.2～4 之间，异常值说明表头锚点识别有误。
 - **阶段继承与页序**：缺图签的多页表继承邻近页阶段；多页按 y 降序、同排 x 升序拼接，
   可用 `--asbuilt-tables 2,1` 手动指定顺序（`--tables` 的顺序即拼接顺序）。
-- **施工图补充**：竣工图 DWG 附带的施工图版材料表会自动补入施工图侧，
-  与用户给的施工图 DWG 按描述去重、后者优先；核对报告的 `supplement_added` 记录补入数。
+- **施工图数据源**：竣工图 DWG 内残留的施工图版材料表一律忽略，施工图数据只取
+  用户发送的施工图文件；核对报告的 `design_source` 会标注这一来源。
 - **模板安全**：模板文件本身从不被修改；每次输出都是一份新副本。
 
 ## 参数速查
@@ -201,7 +203,6 @@ python scripts/import_materials.py --asbuilt "竣工图.dwg" --design "施工图
 | `--asbuilt-stage` / `--design-stage` | 默认 `竣工图` / `施工图`，可设 `auto` 取全部表 |
 | `--match-mode group\|global\|hybrid` | 默认 `group`（严格同分组）；分组名不一致时用 `hybrid`（先同组再全局）或 `global` |
 | `--row-base asbuilt\|design\|merged` | 输出行序基准，默认 `asbuilt`，详见「多项目适配与行序基准」 |
-| `--no-supplement` | 不从竣工图 DWG 附带的施工图版材料表补充施工图数据 |
 | `--template` | `summary`（默认加强版汇总模板）/ `sample`（IC24H201 成品模板）/ 任意 `.xls` 路径 |
 | `--no-fill-summary` | 不同步 `2-汇总`，只写 `1-初步比对` |
 | `--sheet` | 默认 `1-初步比对` |

@@ -77,7 +77,7 @@ def parse_repo(text: str):
 
 
 def http_get(url: str, timeout=30, token=None) -> bytes:
-    headers = {"User-Agent": "dwg-material-to-xls-installer/1.4"}
+    headers = {"User-Agent": "dwg-material-to-xls-installer/1.5"}
     if token:
         headers["Authorization"] = "Bearer " + token
     req = urllib.request.Request(url, headers=headers)
