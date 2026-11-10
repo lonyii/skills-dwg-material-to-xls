@@ -1,2 +1,3 @@
-# Windows batch files must keep CRLF line endings (also inside GitHub zip archives).
-*.bat text eol=crlf
+# Windows batch files: keep bytes EXACTLY as-is (GBK Chinese text + CRLF).
+# Do NOT let git text-convert or normalize these, or Chinese prompts break.
+*.bat binary

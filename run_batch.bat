@@ -1,30 +1,40 @@
 @echo off
-chcp 65001 >nul 2>nul
-set "PYTHONIOENCODING=utf-8"
+chcp 936 >nul 2>nul
+set "PYTHONIOENCODING=gbk"
 setlocal
 
 rem =====================================================================
-rem  dwg-material-to-xls  -  drag & drop batch runner (no AI needed)
-rem  Drop ONE OR MORE folders (or .dwg files) onto this .bat file.
-rem  Requirements on this PC: Python 3 + pywin32 + a CAD (GStarCAD /
-rem  AutoCAD / ZWCAD) + Microsoft Excel. pywin32 is installed if missing.
+rem  dwg-material-to-xls  -  portable drag & drop batch runner (no AI)
+rem  Drop one or more folders (or .dwg files) onto this .bat file.
+rem  Scripts and templates live inside this folder: copy the whole folder anywhere.
 rem
-rem  NOTE: This script deliberately avoids ( ... ) command blocks around
-rem  %* (the dropped arguments). A file name containing ")" would close
-rem  such a block early and crash the batch ("... was unexpected at this
-rem  time"). All branches use goto labels instead.
+rem  Target PC needs (checked on startup):
+rem    - Python 3.8+        (auto-installed via winget if available)
+rem    - pywin32            (auto-installed via pip if missing)
+rem    - COM-capable CAD: GStarCAD / AutoCAD / ZWCAD
+rem    - Microsoft Excel or WPS Spreadsheets (COM), to write .xls output
+rem
+rem  NOTE: no ( ... ) blocks around %* (dropped args). A ")" in a file name
+rem  would close such a block early and crash the batch. All branches use goto.
 rem
 rem  Optional environment variables:
-rem    DWG_BATCH_NOPAUSE=1   do not wait for a key (scheduled / scripted runs)
-rem    DWG_BATCH_DRYRUN=1    only show the plan, do not write .xls files
-rem    DWG_BATCH_NOCACHE=1   always re-read drawings from CAD
+rem    DWG_BATCH_NOPAUSE=1   no pause when finished (scheduled / scripted runs)
+rem    DWG_BATCH_DRYRUN=1    show plan only, do not write .xls
+rem    DWG_BATCH_NOCACHE=1   always re-read CAD (ignore cache)
+rem    DWG_BATCH_NODEPS=1    skip startup dependency self-check
 rem =====================================================================
 
 set "HERE=%~dp0"
 set "SCRIPT=%HERE%scripts\auto_export.py"
+set "DEPS=%HERE%scripts\check_deps.py"
+set "CACHE=%HERE%_cache"
+set "LOG=%HERE%run_batch.log"
 
 if "%~1"=="" goto NOARGS
 if not exist "%SCRIPT%" goto NOSCRIPT
+
+rem --- cache dir INSIDE this folder: portable, no user-profile writes ---
+if not exist "%CACHE%" mkdir "%CACHE%" >nul 2>nul
 
 rem --- locate Python 3 ---------------------------------------------------
 set "PY="
@@ -32,35 +42,53 @@ where py >nul 2>nul
 if not errorlevel 1 set "PY=py -3"
 if not defined PY where python >nul 2>nul
 if not errorlevel 1 if not defined PY set "PY=python"
-if not defined PY goto NOPY
-
-rem --- check / install pywin32 -------------------------------------------
-%PY% -c "import win32com.client" >nul 2>nul
-if errorlevel 1 goto INSTALLPY
+if not defined PY goto AUTOPY
 goto AFTERPY
-:INSTALLPY
-echo  Installing missing dependency: pywin32 ...
-%PY% -m pip install pywin32
+
+rem --- try to auto-install Python via winget -----------------------------
+:AUTOPY
+echo  未找到 Python 3，正在尝试自动安装（winget）...
+where winget >nul 2>nul
+if errorlevel 1 goto NOPY
+winget install -e --id Python.Python.3.12 --silent --accept-source-agreements --accept-package-agreements
+where py >nul 2>nul
+if not errorlevel 1 set "PY=py -3"
+if not defined PY where python >nul 2>nul
+if not errorlevel 1 if not defined PY set "PY=python"
+if not defined PY goto NOPY
+echo  Python 已安装。若 COM 组件异常，请重新打开窗口后再拖放。
+goto AFTERPY
+
 :AFTERPY
 
-rem --- entity cache: reused only while the DWG files are unchanged --------
+rem --- dependency self-check (Python / pywin32 / CAD / Excel) ------------
+if "%DWG_BATCH_NODEPS%"=="1" goto AFTERDEPS
+if not exist "%DEPS%" goto AFTERDEPS
+%PY% "%DEPS%"
+if errorlevel 1 goto DEPFAIL
+goto AFTERDEPS
+:DEPFAIL
+echo.
+echo  依赖自检未通过，请按上面的提示处理后重试。
+if not "%DWG_BATCH_NOPAUSE%"=="1" pause
+:AFTERDEPS
+
+rem --- run arguments -----------------------------------------------------
 set "DRYARG="
 if "%DWG_BATCH_DRYRUN%"=="1" set "DRYARG=--dry-run"
-if not exist "%USERPROFILE%\.workbuddy" mkdir "%USERPROFILE%\.workbuddy" >nul 2>nul
-if not exist "%USERPROFILE%\.workbuddy\dwg-entity-cache" mkdir "%USERPROFILE%\.workbuddy\dwg-entity-cache" >nul 2>nul
 
-set "LOG=%HERE%run_batch.log"
 echo.
-echo  Processing dropped items. Progress shows live below, please wait...
+echo  正在处理拖入的文件，进度会实时显示在下方，请稍候...
 echo.
 if exist "%HERE%version.json" findstr /c:"\"version\"" "%HERE%version.json"
-echo  Using script: %SCRIPT%
+echo  使用脚本：%SCRIPT%
+echo  缓存目录：%CACHE%
 echo.
 
-rem --- run: %* is expanded OUTSIDE any ( ... ) block ----------------------
-rem Progress prints live to this window; auto_export.py also tees to %LOG%.
+rem --- run: %* expanded OUTSIDE any ( ... ) block ------------------------
+rem progress prints live here; auto_export.py also tees to %LOG%.
 if "%DWG_BATCH_NOCACHE%"=="1" goto RUNNOCACHE
-%PY% "%SCRIPT%" %* --cache-dir "%USERPROFILE%\.workbuddy\dwg-entity-cache" %DRYARG% --log-file "%LOG%"
+%PY% "%SCRIPT%" %* --cache-dir "%CACHE%" %DRYARG% --log-file "%LOG%"
 goto AFTERRUN
 :RUNNOCACHE
 %PY% "%SCRIPT%" %* %DRYARG% --log-file "%LOG%"
@@ -70,29 +98,34 @@ echo.
 
 echo.
 if "%RC%"=="0" goto DONEOK
-echo  Finished with errors (code %RC%). Full log: "%LOG%"
+echo  处理完成但有错误（代码 %RC%）。完整日志："%LOG%"
 goto END
 :DONEOK
-echo  Done. See the output folder printed above. Full log: "%LOG%"
+echo  全部完成。输出文件夹见上方。完整日志："%LOG%"
 :END
 if not "%DWG_BATCH_NOPAUSE%"=="1" pause
 exit /b %RC%
 
 :NOARGS
 echo.
-echo  Usage: drag a folder ^(or several .dwg files^) onto this .bat file.
-echo  The folder may contain drawings of several projects.
-echo  Output folder is printed below when processing starts.
+echo  用法：把文件夹（或多个 .dwg 文件）拖到本 bat 文件上。
+echo  文件夹内可以包含多个工程的图纸。
+echo  输出文件夹会在开始处理时显示在下方。
 echo.
 if not "%DWG_BATCH_NOPAUSE%"=="1" pause
 exit /b 1
 
 :NOSCRIPT
-echo  [ERROR] Cannot find %SCRIPT%
+echo  [错误] 找不到 %SCRIPT%
+echo  请把 run_batch.bat、scripts 文件夹和 assets 文件夹放在同一目录。
 if not "%DWG_BATCH_NOPAUSE%"=="1" pause
 exit /b 1
 
 :NOPY
-echo  [ERROR] Python 3 not found in PATH. Install from https://www.python.org/
+echo.
+echo  [错误] 未找到 Python 3，且 winget 也未能自动安装。
+echo  请从 https://www.python.org/downloads/ 下载安装 Python 3.8 及以上版本，
+echo  安装时务必勾选 "Add Python to PATH"，然后重新拖放运行本 bat。
+echo.
 if not "%DWG_BATCH_NOPAUSE%"=="1" pause
 exit /b 1

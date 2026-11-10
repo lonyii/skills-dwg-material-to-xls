@@ -500,7 +500,7 @@ def main(argv=None):
     try:
         for idx, path in enumerate(dwgs, 1):
             name_i = os.path.basename(path)
-            print("  ▸ 读取 %d/%d：%s" % (idx, len(dwgs), name_i), flush=True)
+            print("  > 读取 %d/%d：%s" % (idx, len(dwgs), name_i), flush=True)
             if not os.path.isfile(path):
                 print("[跳过] 文件不存在：%s" % path)
                 continue
@@ -574,7 +574,7 @@ def main(argv=None):
         ab = [i for i in group if i["stage"] == "asbuilt"]
         sg = [i for i in group if i["stage"] == "design"]
         cur_name = _name_of(group, "" if (not no or no.startswith("_")) else no)
-        print("  ▸ 生成 %d/%d：%s" % (gen_done, gen_total, cur_name), flush=True)
+        print("  > 生成 %d/%d：%s" % (gen_done, gen_total, cur_name), flush=True)
         # 竣工图为基准：把多工程施工图也纳入本组的候选数据源，
         # 由 rows_of 按本组工程名筛选其中属于本工程的表。
         if ab:

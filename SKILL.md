@@ -53,13 +53,18 @@ python scripts/auto_export.py "文件夹A" "文件夹B"     # 多个文件夹混
 文件夹模式：递归扫描其中所有 `.dwg/.dxf`（`--no-recursive` 只扫顶层），
 未指定 `--out-dir` 时输出到该文件夹下的 `材料平差输出/`；
 分层目录（`工程A/竣工图/`、`工程A/施工图/`）也能正确判别阶段。
-**脱离 AI 运行**：把文件夹直接拖到技能根目录的 `run_batch.bat` 上，
-批处理会自己找 Python、检查 `pywin32`、调用本脚本并把结果写进 `材料平差输出/`；
-实体缓存按 DWG 修改时间自动失效；运行**进度实时显示在批处理窗口**
-（`[1/2] 读取图纸` / `[2/2] 生成`，带 ASCII 进度条与当前文件名），
-完整日志仍同步写入 `run_batch.log`（v2.1.5 起 Python 用 `--log-file` 直接 tee，
-不再等跑完才一次性打印）。
-无人值守可设 `DWG_BATCH_NOPAUSE=1`，只预演可设 `DWG_BATCH_DRYRUN=1`。
+**脱离 AI 运行（可移植到任意电脑/文件夹）**：把整个技能文件夹（含 `scripts/`
+与 `assets/`）复制到目标电脑任意路径，把图纸文件夹拖到 `run_batch.bat` 上即可。
+v2.3.0 起：所有提示改为**中文**；启动时 `scripts/check_deps.py` 自检 Python /
+pywin32 / CAD / Excel 并明确提示缺什么（不启动 CAD，只读注册表）；无 Python 时
+尝试用 winget 自动安装、否则给出带下载链接的指引；pywin32 缺失自动 pip 安装。
+缓存与日志写在**技能包目录内**（`_cache/`、`run_batch.log`），整包可搬移、不写
+用户主目录。bat 用 GBK 编码 + `chcp 936`（cmd 按系统 ANSI 解析 bat），中文提示
+才不会乱码；`.gitattributes` 将 `*.bat` 标为 `binary` 防止 git 改动字节。
+运行**进度实时显示在批处理窗口**（`[1/2] 读取图纸` / `[2/2] 生成`，ASCII 进度条
+与当前文件名），完整日志同步写入 `run_batch.log`。
+无人值守 `DWG_BATCH_NOPAUSE=1`，只预演 `DWG_BATCH_DRYRUN=1`，
+跳过自检 `DWG_BATCH_NODEPS=1`。
 
 脚本自动完成：
 
