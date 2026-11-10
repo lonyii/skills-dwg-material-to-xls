@@ -40,12 +40,16 @@ if hasattr(sys.stdout, "reconfigure"):
     except Exception:                          # noqa: BLE001
         pass
 
-HEADER_KEYS = ("序号", "物料描述", "名称", "规格", "单位", "数量",
+HEADER_KEYS = ("序号", "物料描述", "名称及规格", "名称", "规格", "单位", "数量",
                "标准号现行", "备注")
 REQUIRED_HEADERS = ("序号", "物料描述", "单位", "数量")
 # 2026 年新图框：表头为「序号 / 标准号或图号 / 名称 / 规格 / 单位 / 数量」，
 # 另有一行「材料 / 质量(kg)」；物料描述拆成「名称 + 规格 + 材料」三列。
 NEW_LAYOUT_HEADERS = ("序号", "名称", "单位", "数量")
+# 2025 年起另一版图框：表头为「序号 / 标准号或图号 / 名称及规格 /
+# （或性能等级）/ 单位 / 数量 / 单总 / 备注」，名称与规格合并成一列，
+# 另有一行「材料 / 质量(kg)」。物料描述只取「名称及规格」这一列。
+MERGED_LAYOUT_HEADERS = ("序号", "名称及规格", "单位", "数量")
 # 参考图框「序号→单位」两个表头锚点的间距（图形单位）。
 # 不同设计院/不同比例出图会整体缩放，所有固定偏移与容差都按此比例换算，
 # 这样同一套算法可同时处理 1:1 图框与 1:2 缩放图框（实测 NC25D007 / ID24E107）。
@@ -96,7 +100,17 @@ def is_header_row(desc: str, unit: str, qty) -> bool:
         return False
     if unit or qty is not None:
         return False
-    return desc.endswith(("：", ":")) or ("材料" in desc or "部分" in desc) and len(desc) < 24
+    if desc.endswith(("：", ":")):
+        return True
+    if ("材料" in desc or "部分" in desc) and len(desc) < 24:
+        return True
+    # 分组标题常见写法：「配合工程（长度不超过10m无外管编号）」「配套工程部分」等，
+    # 通常以「工程」结尾或含「工程（」「工程(」，且整行只有标题文字。
+    if len(desc) < 40 and ("工程" in desc and
+                           (desc.endswith("工程") or "工程（" in desc or "工程(" in desc
+                            or desc.endswith("工程部分"))):
+        return True
+    return False
 
 
 def parse_qty(s: str):
@@ -273,9 +287,10 @@ def detect_tables(ents):
                 anchors[key] = min(matches, key=lambda e: abs(e["x"] - c["x"]))["x"]
         old_ok = all(k in anchors for k in REQUIRED_HEADERS)
         new_ok = all(k in anchors for k in NEW_LAYOUT_HEADERS)
-        if old_ok or new_ok:
-            headers.append({"y": c["y"], "anchors": anchors,
-                            "layout": "old" if old_ok else "name-spec"})
+        merged_ok = all(k in anchors for k in MERGED_LAYOUT_HEADERS)
+        if old_ok or new_ok or merged_ok:
+            layout = "old" if old_ok else ("name-spec" if new_ok else "merged-spec")
+            headers.append({"y": c["y"], "anchors": anchors, "layout": layout})
     # 同一图纸中的多页：先按表头 y 降序（上下并排时上页在前），
     # 同一水平线再按 x 升序（左右并排时左页在前）。
     headers.sort(key=lambda h: (-round(h["y"] / 1000), h["anchors"]["序号"]))
@@ -361,6 +376,23 @@ def _column_bounds(a, x_left, x_right, scale=1.0, layout="old"):
             "数量": (qty - 300 * scale, note - 1200 * scale),
             "备注": (note - 1200 * scale, x_right),
         }
+    elif layout == "merged-spec":
+        # 「名称及规格」合并列：序号/标准号/名称及规格/(性能等级)/单位/数量/单总/备注。
+        # 单位与数量锚点很近（本图框约 1000），用较小偏移避免吞并相邻列。
+        std = a.get("标准号现行", seq + 1000 * scale)
+        mname = a["名称及规格"]
+        note = a.get("备注", qty + 3000 * scale)
+        # 材料/性能等级列（如 Q235B、KTH350-10）位于名称列与单位列之间，
+        # 成品不写入它，故名称列右界取在材料列左侧：单位锚点 - 4000*scale。
+        name_right = unit - 4000 * scale
+        b = {
+            "序号": (x_left, std - 300 * scale),
+            "标准号现行": (std - 300 * scale, mname - 1500 * scale),
+            "名称及规格": (mname - 1500 * scale, name_right),
+            "单位": (name_right, qty - 300 * scale),
+            "数量": (qty - 300 * scale, note - 1500 * scale),
+            "备注": (note - 1500 * scale, x_right),
+        }
     else:
         std = a.get("标准号现行", qty + 2500 * scale)
         note = a.get("备注", std + 2800 * scale)
@@ -372,7 +404,7 @@ def _column_bounds(a, x_left, x_right, scale=1.0, layout="old"):
             "标准号现行": (qty + 700 * scale, note - 1500 * scale),
             "备注": (note - 1500 * scale, x_right),
         }
-    keep = set(REQUIRED_HEADERS) | {"名称", "规格", "材料"}
+    keep = set(REQUIRED_HEADERS) | {"名称", "规格", "名称及规格", "材料"}
     return {k: v for k, v in b.items() if k in a or k in keep}
 
 
@@ -514,6 +546,11 @@ def parse_table(ents, table):
                            for t in cols.get(key, [])
                            if len(t) >= 2 and not re.fullmatch(r"[\d.\s]+", t)
                            and not _is_sign_text(t)]
+        elif table.get("layout") == "merged-spec":
+            # 「名称及规格」合并列：成品描述就是这一列原样，忽略材料列。
+            ln["descs"] = [t for t in cols.get("名称及规格", [])
+                           if len(t) >= 2 and not re.fullmatch(r"[\d.\s]+", t)
+                           and not _is_sign_text(t)]
         else:
             ln["descs"] = [t for t in cols.get("物料描述", [])
                            if len(t) >= 2 and not re.fullmatch(r"[\d.\s]+", t)
@@ -544,33 +581,68 @@ def parse_table(ents, table):
         anchors = [i for i, ln in enumerate(seg_lines) if ln["seq"] is not None]
         if not anchors:
             continue
+        # 无序号行分两类：分组标题（如「厨房部分」「调压前材料：」）应独立成行，
+        # 其余（续行描述）才归给最近的材料锚点。
+        # 材料表大标题（如「厨房工程（ID26E025）」）位于第一条材料之前，
+        # 括号内是纯工程编号；数据区中部同形式的文字则是真正的分组标题，应保留。
+        first_anchor_idx = anchors[0]
+
+        def _desc_of(ln):
+            return " ".join(x.strip() for x in ln["descs"]).strip()
+
+        def _numbered_title_at_top(ln, idx):
+            """位于第一条材料之前、括号内为纯工程编号的材料表大标题。"""
+            if idx >= first_anchor_idx:
+                return False
+            d = _desc_of(ln)
+            return bool(re.search(r"[（(][A-Z]{2}\d{2}[A-Z]\d{3}[）)]", d))
+
+        def _standalone_header(ln, idx):
+            if ln["seq"] is not None or ln["is_header_line"]:
+                return False
+            if ln["unit"] or ln["qty"] is not None:
+                return False
+            d = _desc_of(ln)
+            if not d or not is_header_row(d, "", None):
+                return False
+            return not _numbered_title_at_top(ln, idx)
+
+        standalone = {i for i, ln in enumerate(seg_lines) if _standalone_header(ln, i)}
+        table_titles = {i for i, ln in enumerate(seg_lines)
+                        if ln["seq"] is None and not ln["is_header_line"]
+                        and not ln["unit"] and ln["qty"] is None
+                        and _numbered_title_at_top(ln, i)}
         owner = {}
         for i, ln in enumerate(seg_lines):
-            if ln["seq"] is not None:
+            if i in standalone or i in table_titles or ln["seq"] is not None:
                 continue
             if not (ln["descs"] or ln["unit"] or ln["qty"] is not None):
                 continue
             owner[i] = min(anchors, key=lambda j: abs(seg_lines[j]["y"] - ln["y"]))
+
+        def _line_desc(group):
+            if table.get("layout") in ("name-spec", "merged-spec"):
+                # 成品表格式：名称列原样（含内部空格/下划线）+ 单个空格 + 规格列原样，
+                # 不拼接材料列，也不把内部空格换成下划线。
+                # 例：热镀锌钢管_燃气专用 DN50（D60.3×3.8）
+                return " ".join(d.strip() for ln in group
+                                for d in ln["descs"]).strip()
+            return "\n".join(d for ln in group for d in ln["descs"]).strip()
+
+        made = {}   # idx -> row
         for idx in anchors:
             anchor = seg_lines[idx]
             extra = [seg_lines[i] for i, j in owner.items() if j == idx]
             group = [anchor] + extra
             group.sort(key=lambda l: -l["y"])       # 描述按视觉从上到下拼接
-            if table.get("layout") == "name-spec":
-                # 成品表格式：名称列原样（含内部空格/下划线）+ 单个空格 + 规格列原样，
-                # 不拼接材料列，也不把内部空格换成下划线。
-                # 例：热镀锌钢管_燃气专用 DN50（D60.3×3.8）
-                desc = " ".join(d.strip() for ln in group
-                                for d in ln["descs"]).strip()
-            else:
-                desc = "\n".join(d for ln in group for d in ln["descs"]).strip()
+            desc = _line_desc(group)
             if not desc:
                 continue
             unit = anchor["unit"] or next((ln["unit"] for ln in extra if ln["unit"]), "")
             qty = anchor["qty"]
             if qty is None:
                 qty = next((ln["qty"] for ln in extra if ln["qty"] is not None), None)
-            rows.append({
+            made[idx] = {
                 "seq": anchor["seq"],
                 "desc": desc,
                 "unit": unit,
@@ -578,7 +650,25 @@ def parse_table(ents, table):
                 "is_header": is_header_row(desc, unit, qty),
                 "table": table["id"],
                 "stage": table["stage"],
-            })
+                "_y": anchor["y"],
+            }
+        for i in standalone:
+            ln = seg_lines[i]
+            desc = _line_desc([ln])
+            if not desc:
+                continue
+            made[i] = {
+                "seq": None, "desc": desc, "unit": "", "qty": None,
+                "is_header": True, "table": table["id"], "stage": table["stage"],
+                "_y": ln["y"],
+            }
+        # 按视觉顺序（与 seg_lines 一致）输出
+        order = {id(ln): n for n, ln in enumerate(seg_lines)}
+        ordered = sorted(made.items(),
+                         key=lambda kv: order.get(id(seg_lines[kv[0]]), 0))
+        for _, r in ordered:
+            r.pop("_y", None)
+            rows.append(r)
     return rows
 
 
