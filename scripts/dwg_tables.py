@@ -498,9 +498,14 @@ def _column_bounds(a, x_left, x_right, scale=1.0, layout="old"):
     else:
         std = a.get("标准号现行", qty + 2500 * scale)
         note = a.get("备注", std + 2800 * scale)
+        # 扁表格（比例<0.1）里表头文字居中严重偏右，而数据文字紧跟序号列：
+        # 如师大南路老图「物料描述」表头 x=786、实际物料 x=765、序号 x=761。
+        # 用 600*scale 作序号列右界会把物料误判为序号，只有图签人名落入描述列。
+        # 扁图改用 seq+2 作分界；正常图保持 600*scale 不变。
+        seq_right = seq + (2.0 if scale < 0.1 else 600 * scale)
         b = {
-            "序号": (x_left, seq + 600 * scale),
-            "物料描述": (seq + 600 * scale, unit - 1500 * scale),
+            "序号": (x_left, seq_right),
+            "物料描述": (seq_right, unit - 1500 * scale),
             "单位": (unit - 1500 * scale, qty - 600 * scale),
             "数量": (qty - 600 * scale, qty + 700 * scale),
             "标准号现行": (qty + 700 * scale, note - 1500 * scale),
@@ -683,6 +688,12 @@ def parse_table(ents, table):
     all_y = [s["y"] for seg in segs for s in seg]
     y_lo, y_hi = min(all_y) - 900 * sc, max(all_y) + 900 * sc
 
+    # 图签行整行排除：扁表格里图签与最后一条材料 y 只差 1~2，
+    # 若不过滤，物料描述末尾会混入设计师姓名（实测师大南路老图「毕倩如」）。
+    # 先找签名标签（编制/校核/审核/日期…）所在的视觉 y，再把同 y 的人名一并排除。
+    sign_ys = [e["y"] for e in ents
+               if y_lo <= e["y"] <= y_hi and _is_sign_text(clean_text(e["t"]).strip())]
+
     items = []
     for e in ents:
         if not (table["x_left"] <= e["x"] <= table["x_right"]):
@@ -690,8 +701,13 @@ def parse_table(ents, table):
         if not (y_lo <= e["y"] <= y_hi):
             continue
         t = clean_text(e["t"]).strip()
-        if t:
-            items.append((e["y"], e["x"], t))
+        if not t:
+            continue
+        # 容差取 0.6：签名标签与人名插入点 y 完全相同，而相邻材料行至少差 4，
+        # 用 2 会误删紧邻的材料行（实测师大南路 DN40 被删）。
+        if any(abs(e["y"] - sy) <= 0.6 for sy in sign_ys):
+            continue
+        items.append((e["y"], e["x"], t))
     items.sort(key=lambda a: (-a[0], a[1]))
 
     # 行聚类容差：正常图用 300*sc；扁表格（行距很小）改用实测行距的一部分，
