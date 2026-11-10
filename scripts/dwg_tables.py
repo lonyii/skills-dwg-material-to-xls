@@ -204,7 +204,17 @@ def read_entities_com(path: str, app=None):
                 except Exception:             # noqa: BLE001  跳过坏实体
                     continue
 
-        walk(doc.ModelSpace, "MODEL")
+        # 大图优化：部分施工图含十几万个实体（建筑底图），逐个 COM 访问会超时。
+        # 材料表文字都在布局空间，ModelSpace 超过阈值时跳过它，只读 PaperSpace/布局。
+        try:
+            model_count = doc.ModelSpace.Count
+        except Exception:                     # noqa: BLE001
+            model_count = 0
+        if model_count > 50000:
+            print("  [大图] ModelSpace %d 实体，跳过模型空间只读布局空间" % model_count,
+                  flush=True)
+        else:
+            walk(doc.ModelSpace, "MODEL")
         walk(doc.PaperSpace, "PAPER")
         # 部分 CAD 的 PaperSpace 只对应当前布局，补遍历其他布局
         try:
@@ -326,8 +336,16 @@ def detect_tables(ents):
             "bounds": _column_bounds(a, x_left, x_right, sc, h.get("layout", "old")),
             "stage": detect_stage(ents, h, x_left, x_right, sc),
             "title": detect_title(ents, h, x_left, x_right, sc),
+            "project": detect_table_project(ents, h, x_left, x_right, sc),
         }
         tables.append(table)
+
+    # 多工程图：给每张表打标，parse_table 据此只保留「首行序号紧贴本表表头」的段，
+    # 避免序号跨越到相邻工程的表格。单工程图不打标，保持原有跨页长表行为。
+    multi_project = len({t["project"] for t in tables if t.get("project")}) > 1
+    if multi_project:
+        for t in tables:
+            t["multi_project"] = True
 
     # 同一图框左右并排的多页表，常只有一页带图签阶段文字：
     # 让 y 接近、x 相邻的「未标注」表继承最近已标注表，避免漏掉整页材料。
@@ -434,14 +452,52 @@ def detect_title(ents, header, x_left, x_right, scale=1.0):
     return ""
 
 
+# 一张施工图 DWG 内可能并排放多个工程的材料表。每张表的表头上方/附近会写
+# 所属工程名（如「三米粥铺师大四食堂店厨房燃气工程」）。下面常量用于识别它。
+_PROJECT_SUFFIXES = ("燃气工程", "天然气工程", "煤气工程", "工程")
+
+
+def detect_table_project(ents, header, x_left, x_right, scale=1.0):
+    """
+    返回本材料表所属的工程名称（用于一张施工图含多个工程时按竣工图筛选表）。
+
+    工程名通常写在表头 y 上方 1500~4500、x 在表序号列右侧 0~16000 的图签区；
+    排除设计院名、通用图集名与「设计阶段/版次」等图签标签。找不到返回 ""。
+    """
+    seq_x = header["anchors"]["序号"]
+    cands = []
+    for e in ents:
+        dy = e["y"] - header["y"]
+        # 表头上方为主（dy>0），也容忍表头正下方一点（个别图纸）
+        if not (1000 * scale <= dy <= 5000 * scale):
+            continue
+        if not (seq_x - 2000 * scale <= e["x"] <= x_right + 16000 * scale):
+            continue
+        t = clean_text(e["t"]).strip()
+        if not (8 <= len(t) <= 48):
+            continue
+        if not any(t.endswith(sx) for sx in _PROJECT_SUFFIXES):
+            continue
+        if any(bad in t for bad in ("设计有限公司", "设计院", "通用图集", "技术标准",
+                                     "燃气集团", "建设单位", "项目名称", "项 目 名 称")):
+            continue
+        # 距离表头越近越可能是本表的工程名；同高时 x 越靠近表头列越优先
+        cands.append((dy, abs(e["x"] - (seq_x + 5000 * scale)), t))
+    if not cands:
+        return ""
+    cands.sort(key=lambda x: (x[0], x[1]))
+    return cands[0][2]
+
+
 def _seq_entities(ents, table):
     lo, hi = table["bounds"]["序号"]
     sc = table.get("scale", 1.0)
+    hy = table["header_y"]
     out = []
     for e in ents:
         if not (lo <= e["x"] < hi):
             continue
-        if abs(e["y"] - table["header_y"]) > 42000 * sc:
+        if abs(e["y"] - hy) > 42000 * sc:
             continue
         t = clean_text(e["t"]).strip()
         if re.fullmatch(r"\d{1,3}", t):
@@ -506,6 +562,16 @@ def parse_table(ents, table):
         return []
     bounds = table["bounds"]
     sc = table.get("scale", 1.0)
+    # 多工程图：序号搜索会跨越相邻工程的表头混入其它表的数据段，
+    # 只保留「首行序号紧贴本表表头」的段（6000*sc 内）。
+    # 单工程图/跨页长表/1:2 缩放图框不打这个标，行为完全不变。
+    if table.get("multi_project"):
+        hy = table["header_y"]
+        def _top(seg):
+            return max(s["y"] for s in seg)
+        near = [seg for seg in segs if 0 <= (hy - _top(seg)) <= 6000 * sc]
+        if near:
+            segs = near
     all_y = [s["y"] for seg in segs for s in seg]
     y_lo, y_hi = min(all_y) - 900 * sc, max(all_y) + 900 * sc
 
@@ -736,9 +802,9 @@ def main(argv=None):
         for t in tables:
             rows = parse_table(ents, t)
             filled = [r for r in rows if r["desc"]]
-            print("  #%d  [%s%s]  %s  表头y=%.0f  序号列x=%.0f  比例=%.2f  有效行=%d  首行=%s" % (
+            print("  #%d  [%s%s]  %s | 工程=%s  表头y=%.0f  序号列x=%.0f  比例=%.2f  有效行=%d  首行=%s" % (
                 t["id"], t["stage"], "(继承)" if t.get("stage_inherited") else "",
-                t["title"] or "(未取到表名)", t["header_y"],
+                t["title"] or "(未取到表名)", t.get("project") or "(未标注)", t["header_y"],
                 t["anchors"]["序号"], t.get("scale", 1.0), len(filled),
                 repr(filled[0]["desc"])[:46] if filled else "-"))
         print("\n提示：用 --tables 指定要提取的表；extract 输出 JSON 供导入脚本使用。")

@@ -209,11 +209,42 @@ def load_drawing(path, cache_dir, app=None):
     }
 
 
-def rows_of(info, stage):
+def _project_match(table_project, target_name, target_no=""):
+    """
+    判断材料表标注的工程是否属于目标工程。
+    一张施工图常混放多个工程的表，按表头附近的工程名（table["project"]）匹配
+    目标竣工图的工程名/编号，避免把别的工程材料并进来。
+    """
+    if not table_project:
+        return False                      # 未标注工程名的表不参与多工程图纸的匹配
+    tp, tn = _flat(table_project), _flat(target_name)
+    if not tn:
+        return False
+    # 只做精确/包含匹配：同一张图里多个工程名只差店名前缀（如「三米粥铺」
+    # vs「面夫子」），相似度会误匹配，绝不能用模糊相似度。
+    if tp == tn or (len(tp) >= 8 and len(tn) >= 8 and (tp in tn or tn in tp)):
+        return True
+    # 编号出现在表工程名里也视为匹配（编号唯一，可靠）
+    if target_no and target_no.upper() in clean_text(table_project).upper():
+        return True
+    return False
+
+
+def rows_of(info, stage, target_project=None, target_no=""):
+    """
+    提取某阶段材料表行。target_project 给定时（施工图多工程场景），
+    只取 table["project"] 与该工程匹配的表。
+    """
     ents = info["ents"]
     chosen = [t for t in info["tables"] if t["stage"] == stage]
     if not chosen and stage == "施工图":
         chosen = info["tables"]          # 阶段缺失时退化为全部表
+    if target_project:
+        matched = [t for t in chosen
+                   if _project_match(t.get("project", ""), target_project, target_no)]
+        if matched:
+            chosen = matched             # 匹配到就只取对应工程的表
+        # 匹配不到时保留全部（退化为旧行为），并交由调用方提示
     rows = []
     for t in sorted(chosen, key=lambda x: x["id"]):
         rows.extend(parse_table(ents, t))
@@ -374,12 +405,55 @@ def main(argv=None):
             os.path.basename(i["path"]), len(i["tables"]), n_ab, n_sg,
             i["no"] or "-", i["name"] or "-"))
 
-    groups = group_drawings(infos)
+    # 一张施工图 DWG 可能混放多个工程的材料表（实测师大四食堂 1 张图含 13 个工程）。
+    # 这种「多工程图」不能只归到某一个组，而应作为共享数据源供各竣工图按工程名筛选。
+    all_design = [i for i in infos if i["stage"] == "design"]
+    multi_design = {}
+    for i in all_design:
+        projects = sorted({t["project"] for t in i["tables"] if t.get("project")})
+        # 「多工程」判定放宽：图内含多个工程名即为候选，随后用
+        # 「能匹配到几张不同的竣工图」在分组后最终确认（见下方 multi_targets）。
+        multi_design[id(i)] = len(projects) > 1
+    # 分组时排除多工程施工图，避免它被当成单工程图只服务某一个组。
+    # 但最终是否启用多工程筛选，还要看它能否匹配到 ≥2 张不同的竣工图：
+    # 只有 1 个匹配目标时说明是单工程图（图内工程名写法不一），走原流程。
+    ab_infos = [i for i in infos if i["stage"] == "asbuilt"]
+    for i in all_design:
+        if not multi_design.get(id(i)):
+            continue
+        projects = sorted({t["project"] for t in i["tables"] if t.get("project")})
+        # 工程名之间若互为子串（同一工程的不同写法，如「XX低压燃气工程」与
+        # 「XX燃气工程」）→ 单工程图，走原流程；若彼此独立（不同店铺名）→ 多工程图，
+        # 即使只提供 1 张竣工图也要按工程名筛选其中对应部分。
+        cores = [_core_name(p) for p in projects]
+        nested = any(a in b or b in a
+                     for k, a in enumerate(cores) for b in cores[k + 1:])
+        hit_ab = set()
+        for ab in ab_infos:
+            for t in i["tables"]:
+                if _project_match(t.get("project", ""), ab["name"], ab["no"]):
+                    hit_ab.add(ab["path"])
+                    break
+        if nested or not hit_ab:
+            multi_design[id(i)] = False
+        else:
+            print("  [多工程施工图] %s：含 %d 个独立工程，%d 个可对应到竣工图" % (
+                os.path.basename(i["path"]), len(projects), len(hit_ab)))
+    single_infos = [i for i in infos if not multi_design.get(id(i))]
+    groups = group_drawings(single_infos)
+
     print("\n工程分组：%d 组" % len(groups))
     results = []
     for no, group in groups.items():
         ab = [i for i in group if i["stage"] == "asbuilt"]
         sg = [i for i in group if i["stage"] == "design"]
+        # 竣工图为基准：把多工程施工图也纳入本组的候选数据源，
+        # 由 rows_of 按本组工程名筛选其中属于本工程的表。
+        if ab:
+            target_name = _name_of(group, no if not no.startswith("_") else "")
+            for i in all_design:
+                if multi_design.get(id(i)) and i not in sg:
+                    sg = sg + [i]
         if not ab:
             print("  [跳过] %s：未找到竣工图，无法生成材料平差表" % (no or "(未编号)"))
             continue
@@ -399,9 +473,15 @@ def main(argv=None):
             # 施工图版材料表是编制时留下的旧数据，一律忽略。
             design = []
             for i in sg:
-                design.extend(rows_of(i, "施工图"))
+                # 多工程施工图按本组竣工图的工程名/编号筛选对应材料表；
+                # 普通单工程施工图保持原行为（target_project=None 取全部表）。
+                if multi_design.get(id(i)):
+                    design.extend(rows_of(i, "施工图", target_project=target_name,
+                                          target_no=proj_no))
+                else:
+                    design.extend(rows_of(i, "施工图"))
             if not design:
-                print("  [提示] %s：施工图文件未检测到材料表，施工图数量将全部留空；"
+                print("  [提示] %s：施工图文件未检测到本工程的材料表，施工图数量将全部留空；"
                       "请确认施工图是否为最终版。" % base)
 
         base_mode = (choose_row_base(asbuilt, design, single)
