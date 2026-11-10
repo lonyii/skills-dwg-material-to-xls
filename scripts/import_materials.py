@@ -56,8 +56,16 @@ SUMMARY_SHEET = "2-汇总"
 FIRST_ROW = 4
 SKILL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ASSETS_DIR = os.path.join(SKILL_DIR, "assets")
-TEMPLATE_SUMMARY = os.path.join(ASSETS_DIR, "材料汇总模板-加强比对版.xls")
-TEMPLATE_SAMPLE = os.path.join(ASSETS_DIR, "材料平差模板.xls")
+def _asset_file(ascii_name, legacy_cn_name):
+    """优先 ASCII 文件名（兼容任意解压工具），找不到再回退旧中文名。"""
+    p = os.path.join(ASSETS_DIR, ascii_name)
+    if os.path.isfile(p):
+        return p
+    return os.path.join(ASSETS_DIR, legacy_cn_name)
+
+
+TEMPLATE_SUMMARY = _asset_file("template_summary.xls", "材料汇总模板-加强比对版.xls")
+TEMPLATE_SAMPLE = _asset_file("template_sample.xls", "材料平差模板.xls")
 DEFAULT_TEMPLATE = TEMPLATE_SUMMARY      # 生产用空白加强版：115 行明细 + 完整汇总/打印版
 TEMPLATE_ALIASES = {
     "summary": TEMPLATE_SUMMARY,          # 空白加强比对版（9 张表，明细容量 115 行）
