@@ -277,7 +277,9 @@ def _table_scale(a):
     w = a["单位"] - a["序号"]
     if w <= 0:
         return 1.0
-    return max(0.2, min(4.0, w / REF_SEQ_UNIT))
+    # 下限放到 0.01：实测 IE26I004 在模型空间画了极扁的材料表（序号→单位仅 128，
+    # 正常约 10126），比例约 0.013；旧下限 0.2 会把列偏移放大 16 倍导致整表串列。
+    return max(0.01, min(4.0, w / REF_SEQ_UNIT))
 
 
 def detect_tables(ents):
@@ -295,6 +297,23 @@ def detect_tables(ents):
             matches = [e for e in near if norm_header(e["t"]) == key]
             if matches:
                 anchors[key] = min(matches, key=lambda e: abs(e["x"] - c["x"]))["x"]
+        # 扁表格（实测 IE26I004，列间距仅约 128）里，并排表的锚点会互相串：
+        # 右栏表头会把左栏的单位/数量当成自己的。用第一步估出的 scale 收紧 x 下界，
+        # 重算一次：列锚点应在本表序号右侧，不允许越过左边界去取隔壁表的列。
+        if "单位" in anchors and "序号" in anchors:
+            w0 = anchors["单位"] - anchors["序号"]
+            sc0 = max(0.01, min(4.0, w0 / REF_SEQ_UNIT))
+            # 仅扁表格（比例 < 0.1）需要收紧 x 下界防止并排表串列；
+            # 正常图保持 -1000，避免切掉正常居中排版的列锚点。
+            if sc0 < 0.1:
+                left_bound = -60 * sc0
+                near2 = [e for e in near if e["x"] - c["x"] >= left_bound]
+                anchors = {}
+                for key in HEADER_KEYS:
+                    matches = [e for e in near2 if norm_header(e["t"]) == key]
+                    if matches:
+                        anchors[key] = min(matches,
+                                           key=lambda e: abs(e["x"] - c["x"]))["x"]
         old_ok = all(k in anchors for k in REQUIRED_HEADERS)
         new_ok = all(k in anchors for k in NEW_LAYOUT_HEADERS)
         merged_ok = all(k in anchors for k in MERGED_LAYOUT_HEADERS)
@@ -338,7 +357,21 @@ def detect_tables(ents):
             "title": detect_title(ents, h, x_left, x_right, sc),
             "project": detect_table_project(ents, h, x_left, x_right, sc),
         }
+        table["row_pitch"] = _estimate_row_pitch(ents, table)
         tables.append(table)
+
+    # 同一图框并排的多栏表，工程名常只写在其中一栏的表头附近：
+    # 让 y 接近、x 相邻的「未标注工程」表继承相邻表的工程名。
+    for t in tables:
+        if t.get("project"):
+            continue
+        near = [u for u in tables if u.get("project") and u["id"] != t["id"]
+                and abs(u["header_y"] - t["header_y"]) <= 8000 * t["scale"]
+                and abs(u["anchors"]["序号"] - t["anchors"]["序号"]) <= 20000 * t["scale"]]
+        if near:
+            nearest = min(near, key=lambda u: abs(
+                u["anchors"]["序号"] - t["anchors"]["序号"]))
+            t["project"] = nearest["project"]
 
     # 多工程图：给每张表打标，parse_table 据此只保留「首行序号紧贴本表表头」的段，
     # 避免序号跨越到相邻工程的表格。单工程图不打标，保持原有跨页长表行为。
@@ -489,6 +522,28 @@ def detect_table_project(ents, header, x_left, x_right, scale=1.0):
     return cands[0][2]
 
 
+def _estimate_row_pitch(ents, table):
+    """
+    从序号列的相邻 y 间距估计真实行高（图形单位）。
+
+    正常图框行距数百、表头「序号→单位」间距约 10126；但某些图（实测 IE26I004）
+    把材料表压得很扁：列间距仅 128、行距仅 8，此时按表头间距推算的 scale=0.2
+    会把 8 的行距当成噪声合并，导致几十行并成 1 行。这里直接用实测行距，
+    让后续去重/聚类容差自适应，而不是依赖表头间距比例。
+    """
+    lo, hi = table["bounds"]["序号"]
+    hy = table["header_y"]
+    ys = sorted({round(e["y"], 2) for e in ents
+                 if lo <= e["x"] < hi and abs(e["y"] - hy) <= 42000
+                 and re.fullmatch(r"\d{1,3}", clean_text(e["t"]).strip())})
+    gaps = [ys[i + 1] - ys[i] for i in range(len(ys) - 1)
+            if 0 < ys[i + 1] - ys[i] < 5000]
+    if not gaps:
+        return 0.0
+    gaps.sort()
+    return float(gaps[len(gaps) // 2])      # 中位数，抗零散图签数字干扰
+
+
 def _seq_entities(ents, table):
     lo, hi = table["bounds"]["序号"]
     sc = table.get("scale", 1.0)
@@ -502,11 +557,13 @@ def _seq_entities(ents, table):
         t = clean_text(e["t"]).strip()
         if re.fullmatch(r"\d{1,3}", t):
             out.append({"y": e["y"], "seq": int(t)})
-    # 同一 y 去重
+    # 同一 y 去重：容差取动态行距的一部分，避免扁表格被合并
+    pitch = table.get("row_pitch", 0.0)
+    dedup_tol = min(60 * sc, pitch * 0.5) if pitch else 60 * sc
     out.sort(key=lambda s: s["y"])
     dedup = []
     for s in out:
-        if dedup and abs(s["y"] - dedup[-1]["y"]) < 60 * sc:
+        if dedup and abs(s["y"] - dedup[-1]["y"]) < dedup_tol:
             continue
         dedup.append(s)
     return dedup
@@ -586,9 +643,13 @@ def parse_table(ents, table):
             items.append((e["y"], e["x"], t))
     items.sort(key=lambda a: (-a[0], a[1]))
 
+    # 行聚类容差：正常图用 300*sc；扁表格（行距很小）改用实测行距的一部分，
+    # 避免把相邻材料行并成一条超长描述（实测 IE26I004 行距仅 8）。
+    pitch = table.get("row_pitch", 0.0)
+    line_tol = min(300 * sc, pitch * 0.5) if pitch else 300 * sc
     lines = []
     for it in items:
-        if lines and abs(lines[-1]["y"] - it[0]) <= 300 * sc:
+        if lines and abs(lines[-1]["y"] - it[0]) <= line_tol:
             lines[-1]["items"].append(it)
         else:
             lines.append({"y": it[0], "items": [it]})

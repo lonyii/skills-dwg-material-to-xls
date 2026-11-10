@@ -230,21 +230,34 @@ def _project_match(table_project, target_name, target_no=""):
     return False
 
 
-def rows_of(info, stage, target_project=None, target_no=""):
+def rows_of(info, stage, target_project=None, target_no="",
+            include_unmarked=False, keep_unmarked_project=False):
     """
-    提取某阶段材料表行。target_project 给定时（施工图多工程场景），
-    只取 table["project"] 与该工程匹配的表。
+    提取某阶段材料表行。target_project 给定时（一张图含多个工程），
+    只取 table["project"] 与该工程匹配的表；阶段与工程名都用于筛选。
+
+    筛选优先级：工程名（最可靠）> 阶段。竣工图 DWG 常附带其它工程的竣工表，
+    必须用本工程名把那些表排除；阶段只在没有工程名信息时用来兜底。
     """
     ents = info["ents"]
-    chosen = [t for t in info["tables"] if t["stage"] == stage]
-    if not chosen and stage == "施工图":
-        chosen = info["tables"]          # 阶段缺失时退化为全部表
+    tables = info["tables"]
+    # 先按工程名筛（若给出）：匹配到就只在这些表里继续
     if target_project:
-        matched = [t for t in chosen
+        matched = [t for t in tables
                    if _project_match(t.get("project", ""), target_project, target_no)]
+        # 竣工图老图纸的竣工表常无工程名标注（project 为空），它们本就属于本图，
+        # 需保留，否则会把真正的竣工表筛掉（实测 IC24H201）。
+        if keep_unmarked_project:
+            matched += [t for t in tables if not t.get("project")]
         if matched:
-            chosen = matched             # 匹配到就只取对应工程的表
-        # 匹配不到时保留全部（退化为旧行为），并交由调用方提示
+            tables = matched
+        # 匹配不到时保留全部（退化旧行为），交由调用方提示
+    # 再按阶段筛
+    chosen = [t for t in tables if t["stage"] == stage]
+    if include_unmarked:
+        chosen += [t for t in tables if t["stage"] == "未标注"]
+    if not chosen:
+        chosen = tables                  # 阶段缺失时退化为全部（本工程）表
     rows = []
     for t in sorted(chosen, key=lambda x: x["id"]):
         rows.extend(parse_table(ents, t))
@@ -464,7 +477,10 @@ def main(argv=None):
 
         asbuilt = []
         for i in ab:
-            asbuilt.extend(rows_of(i, "竣工图"))
+            # 竣工图 DWG 常附带其它工程的竣工/施工图材料表（实测 IE26I004 附带
+            # 「横三路」工程的表）。以本图工程名筛表，只取本工程那一张。
+            asbuilt.extend(rows_of(i, "竣工图", target_project=i["name"],
+                                   target_no=i["no"], keep_unmarked_project=True))
         single = not sg
         if single:
             design = [dict(r) for r in asbuilt]      # 施工图量 = 竣工图量
