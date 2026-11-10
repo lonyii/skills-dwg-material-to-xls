@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+
 """
 从 DWG/DXF 图纸中识别并重建燃气工程的「材料表」。
 
@@ -24,7 +25,11 @@ CLI：
   python dwg_tables.py extract <drawing> [--stage auto|竣工图|施工图] [--tables 1,2]
                        [--cache entities.json] [--from-json entities.json] [--out rows.json]
 """
+
 from __future__ import annotations
+
+__author__ = "lonyii"
+__email__ = "lonyii@qq.com"
 
 import argparse
 import json

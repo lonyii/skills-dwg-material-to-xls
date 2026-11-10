@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+
 """
 维护者发布脚本：更新版本记录、生成 commit 与 tag，可选推送。
 
@@ -10,7 +11,11 @@
 发布流程：修改 version.json → git add -A → commit → tag vX.Y.Z →（--push）推送。
 使用者不需要此脚本，日常更新请用 update.py。
 """
+
 from __future__ import annotations
+
+__author__ = "lonyii"
+__email__ = "lonyii@qq.com"
 
 import argparse
 import json

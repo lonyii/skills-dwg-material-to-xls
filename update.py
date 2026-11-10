@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+
 """
 dwg-material-to-xls 版本检查与升级（纯 Python 标准库）。
 
@@ -10,7 +11,11 @@ dwg-material-to-xls 版本检查与升级（纯 Python 标准库）。
 
 版本来源：远端 version.json；副本会备份到 ~/.workbuddy/skill-backups/。
 """
+
 from __future__ import annotations
+
+__author__ = "lonyii"
+__email__ = "lonyii@qq.com"
 
 import argparse
 import json

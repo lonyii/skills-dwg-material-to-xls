@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+
 """
 把 DWG 施工图 / 竣工图材料表分别导入「1-初步比对」工作表，生成新的 .xls，
 并可选把明细同步到「2-汇总」，供打印版、变更估价等下游表公式联动。
@@ -27,7 +28,11 @@ CLI：
       [--template summary|sample|模板.xls] [--out 输出.xls] [--report 核对.json] [--dry-run]
   python import_materials.py --asbuilt-rows rows_jg.json --design-rows rows_sg.json --dry-run
 """
+
 from __future__ import annotations
+
+__author__ = "lonyii"
+__email__ = "lonyii@qq.com"
 
 import argparse
 import difflib

@@ -1,10 +1,13 @@
 {
   "skill": "dwg-material-to-xls",
-  "version": "2.1.0",
+  "author": "lonyii",
+  "email": "lonyii@qq.com",
+  "version": "2.1.1",
   "released": "2026-11-10",
   "repo": "https://github.com/lonyii/skills-dwg-material-to-xls",
   "branch": "main",
   "changelog": [
+    "2.1.1 (2026-11-10) 补充作者信息：version.json 增加 author/email 字段，SKILL.md frontmatter 增加 author/email，README.md 标注作者，6 个 Python 脚本增加 __author__/__email__ 元数据。功能无变化。",
     "2.1.0 (2026-11-10) 新增无页码图纸的多表拼接顺序规则 order_tables()：序号连贯（1-26/27-52 首尾相接）按序号从小到大；序号从上到下→多表从左到右；序号从下到上→多表从右到左。检测时给每张表记录 seq_dir/seq_min/seq_max；extract_rows 与 auto_export.rows_of 都按此排序，手动 --tables 仍可覆盖。默认并入一张成品表、工程编号不同才分文件。验收：IE26I004 本工程两表排为中压埋地部分在前（成品首行相应改变，仍 40 行），三规则单元测试通过，旧三实例与师大样本回归保持。",
     "2.0.1 (2026-11-10) run_batch.bat 增加版本与脚本路径提示，拖放时直接显示技能版本，避免误用旧副本（实测用户拖入工作目录 _pub9 的 v1.9.0 副本导致 IE26I004 仍输出 2 行；把本机所有历史测试副本同步到 v2.0.0 后恢复正常 40 行）。bat 修复为 CRLF 换行。",
     "2.0.0 (2026-11-10) 修复 run_batch.bat 生成 IE26I004 只有 2 行超长乱码、单位数量全空的错误。根因三处：①极扁表格（序号→单位仅 128，行距 8，比例 0.013）被旧下限 0.2 截断致列偏移放大、行聚类把几十行并成一行——_table_scale 下限降到 0.01，_estimate_row_pitch 实测行距驱动去重与行聚类；②左右并排表头串列（右栏误取左栏单位/数量锚点）——比例<0.1 时按 scale 收紧锚点 x 下界；③竣工图附带其它工程（横三路）的竣工表被按阶段误取——rows_of 先按本工程名/编号筛表，竣工图也用本图 name 筛选，keep_unmarked_project 保留无标注竣工表兼容老图。验收：IE26I004 从 2 行乱码→40 行正确材料（含四组标题，未混入横三路），旧三实例回归 IC24H201/ID24E107 0 差异、NC25D007 268，师大 13 工程样本保持。",

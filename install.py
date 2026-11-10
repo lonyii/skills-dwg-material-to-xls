@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+
 """
 dwg-material-to-xls 一键安装器（纯 Python 标准库，无需 git、无需第三方包）。
 
@@ -18,7 +19,11 @@ dwg-material-to-xls 一键安装器（纯 Python 标准库，无需 git、无需
 可用环境变量 WORKBUDDY_SKILLS_DIR 改变技能根目录，GITHUB_MIRROR 设置下载镜像，
 GITHUB_TOKEN 用于私有仓库。
 """
+
 from __future__ import annotations
+
+__author__ = "lonyii"
+__email__ = "lonyii@qq.com"
 
 import argparse
 import io
@@ -77,7 +82,7 @@ def parse_repo(text: str):
 
 
 def http_get(url: str, timeout=30, token=None) -> bytes:
-    headers = {"User-Agent": "dwg-material-to-xls-installer/2.1.0"}
+    headers = {"User-Agent": "dwg-material-to-xls-installer/2.1.1"}
     if token:
         headers["Authorization"] = "Bearer " + token
     req = urllib.request.Request(url, headers=headers)

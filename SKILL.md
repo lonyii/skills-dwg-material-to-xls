@@ -1,5 +1,7 @@
 ---
 name: dwg-material-to-xls
+author: lonyii
+email: lonyii@qq.com
 description: 将燃气工程 DWG 施工图、竣工图中的材料表分别导入「1-初步比对」工作表，并自动同步「2-汇总」生成材料平差/材料汇总 .xls。当用户要求把两张 DWG 的材料表导入一个 Excel、做施工图与竣工图材料对比/材料平差/初步比对/材料汇总、变更结算材料表，或提供 .dwg 与 .xls 模板并提到 IC 项目编号、结算材料核对时使用。内置空白「加强比对版」汇总模板（115 行明细、汇总/打印版/变更估价/调拨价），支持浩辰CAD/AutoCAD/中望CAD 直读 DWG、DXF 可选后端、实体缓存离线复用，并用本机 Excel 保真保留模板公式与全部工作表。
 agent_created: true
 ---

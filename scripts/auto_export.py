@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+
 """
 「发若干 DWG 给 AI，说导出材料表」时使用的一键编排入口。
 
@@ -22,7 +23,11 @@
 重要业务规则：竣工图 DWG 编制时常保留施工图版材料表，那是旧版且不准确的数据，
 一律忽略；施工图数据只取用户发送的施工图文件。
 """
+
 from __future__ import annotations
+
+__author__ = "lonyii"
+__email__ = "lonyii@qq.com"
 
 import argparse
 import difflib
