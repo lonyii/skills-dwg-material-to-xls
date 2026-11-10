@@ -42,7 +42,7 @@ if hasattr(sys.stdout, "reconfigure"):
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from dwg_tables import (  # noqa: E402
     assign_groups, clean_text, close_cad_app, detect_tables, load_entities,
-    norm_desc, open_cad_app, parse_table,
+    norm_desc, open_cad_app, order_tables, parse_table,
 )
 from import_materials import (  # noqa: E402
     match_rows, match_rows_design_base, match_rows_merged,
@@ -259,7 +259,7 @@ def rows_of(info, stage, target_project=None, target_no="",
     if not chosen:
         chosen = tables                  # 阶段缺失时退化为全部（本工程）表
     rows = []
-    for t in sorted(chosen, key=lambda x: x["id"]):
+    for t in order_tables(chosen):      # 无页码时按序号走向/连贯性排多表顺序
         rows.extend(parse_table(ents, t))
     assign_groups(rows)
     return rows

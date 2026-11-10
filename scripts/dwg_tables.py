@@ -360,6 +360,21 @@ def detect_tables(ents):
         table["row_pitch"] = _estimate_row_pitch(ents, table)
         tables.append(table)
 
+    # 记录每张表的序号走向与范围，供多表拼接排序使用：
+    # top-down = 序号1在最上（沿 y 递减方向递增）；bottom-up = 序号1在最下。
+    for t in tables:
+        seqs = _seq_entities(ents, t)
+        nums = [s["seq"] for s in seqs if s["seq"] <= 200]
+        if len(seqs) >= 2:
+            diffs = [seqs[i + 1]["seq"] - seqs[i]["seq"]
+                     for i in range(min(8, len(seqs) - 1))]
+            inc = sum(d > 0 for d in diffs) >= sum(d < 0 for d in diffs)
+            t["seq_dir"] = "bottom-up" if inc else "top-down"
+        else:
+            t["seq_dir"] = "unknown"
+        t["seq_min"] = min(nums) if nums else 9999
+        t["seq_max"] = max(nums) if nums else 0
+
     # 同一图框并排的多栏表，工程名常只写在其中一栏的表头附近：
     # 让 y 接近、x 相邻的「未标注工程」表继承相邻表的工程名。
     for t in tables:
@@ -396,6 +411,37 @@ def detect_tables(ents):
             t["stage"] = best["stage"]
             t["stage_inherited"] = True
     return tables
+
+
+def order_tables(tables):
+    """
+    决定同一张图里多张材料表的拼接顺序（图纸无「第X页」标注时的习惯规则）：
+
+      1. 序号连贯（各表主序号段首尾相接）→ 按序号从小到大；
+      2. 序号从上到下（表头在上、序号1在最上）→ 整表从左到右（x 升序）；
+      3. 序号从下到上（序号1在最下）→ 整表从右到左（x 降序）。
+
+    只影响「多张表」的先后；单表原样返回。调用方应先把不同工程/不同阶段的表分开，
+    本函数只排已经属于同一成品的那些表。
+    """
+    tables = list(tables)
+    if len(tables) <= 1:
+        return tables
+    mins = [t.get("seq_min", 9999) for t in tables]
+    # 序号连贯：各表起始序号不同，且按起始排序后前一表的最大序号紧接后一表的最小序号
+    # （区间首尾相接、不重叠），如 1-26 / 27-52。
+    by_start = sorted(tables, key=lambda t: t.get("seq_min", 9999))
+    contiguous = (len(set(mins)) == len(mins) and all(
+        by_start[i].get("seq_max", 0) + 1 == by_start[i + 1].get("seq_min", 9999)
+        for i in range(len(by_start) - 1)))
+    if contiguous:
+        return by_start
+    # 按多数表的序号走向决定左右顺序
+    ups = sum(1 for t in tables if t.get("seq_dir") == "bottom-up")
+    downs = sum(1 for t in tables if t.get("seq_dir") == "top-down")
+    if downs > ups:                       # 序号从上到下 → 从左到右
+        return sorted(tables, key=lambda t: t["anchors"]["序号"])
+    return sorted(tables, key=lambda t: -t["anchors"]["序号"])   # 从下到上 → 从右到左
 
 
 def _column_bounds(a, x_left, x_right, scale=1.0, layout="old"):
@@ -825,7 +871,8 @@ def extract_rows(drawing, from_json=None, cache=None, stage="auto", tables=None)
         by_id = {t["id"]: t for t in chosen}
         chosen = [by_id[i] for i in tables if i in by_id]
     else:
-        chosen = sorted(chosen, key=lambda x: x["id"])
+        # 无「第X页」标注时按序号走向/连贯性决定多表拼接顺序
+        chosen = order_tables(chosen)
     rows = []
     for t in chosen:
         rows.extend(parse_table(ents, t))
