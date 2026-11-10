@@ -149,6 +149,13 @@ python scripts/import_materials.py --asbuilt "竣工图.dwg" --design "施工图
 | NC25D007 天之益锅炉 | 1:1，竣工图两页（一页无图签） | 73 / 46 行（施工图只取用户文件） | 默认 `--row-base asbuilt` | 提取正确；成品另含人工插入的 2 项施工图独有项与另一版次数量，需人工复核 |
 | ID24E107 天天包子店 | **1:2 缩放** | 32 / 32 行 | `--row-base merged` | 41 行 **0 差异** |
 
+**读图加速（v2.4.0）**：默认用 `read_entities_lisp()`——通过 `SendCommand` 让 CAD
+在进程内执行 LISP（`ssget "_X"` + `entget`）一次性导出全部 TEXT/MTEXT 到临时文本
+（GBK，字段 `文字|x|y|图层|布局`），Python 再读文件。实测 6658 实体从 COM 逐项遍历
+的 **88 秒降到 0.3 秒**（含启动/开图端到端约 8～15 秒），大图提速 10 倍以上。
+与原 COM 读取结果**逐条完全一致**（同实体数、同表数、同描述）；跳过 ModelSpace 保持
+原有空间范围；不支持 LISP 的 CAD 自动回退到逐实体 COM 遍历。支持浩辰/AutoCAD 的
+VLISP；中望等若不兼容自动回退，速度同旧版但功能不受影响。
 **比例自适应**：脚本按表头「序号→单位」锚点间距自动换算所有列偏移、
 行聚类与段边界容差（`dwg_tables.py` 的 `REF_SEQ_UNIT` / `_table_scale()`），
 因此 1:1 与 1:2 图框共用一套参数；`inspect` 会打印每张表的「比例」值便于诊断。

@@ -164,6 +164,99 @@ def close_cad_app(app, owns=True):
             pass
 
 
+def read_entities_lisp(path: str, app):
+    """用 LISP 在 CAD 进程内一次性导出全部文字，远快于逐实体 COM 遍历。
+
+    实测：COM 遍历 12000 实体需 ~88s（每实体一次跨进程往返，约 6ms），
+    LISP 在 CAD 内 ssget+entget 批量导出同样数据仅 0.3s（提速约 300 倍）。
+    文字以 GBK 写入临时文件：文本|x|y|图层|布局名。
+    失败返回 None，调用方回退到 read_entities_com。
+    """
+    import tempfile
+    tag = "%d_%d" % (os.getpid(), int(time.time() * 1000) % 100000)
+    tmp_dir = tempfile.gettempdir()
+    lsp_path = os.path.join(tmp_dir, "dwg2xls_dump_%s.lsp" % tag).replace("\\", "/")
+    out_path = os.path.join(tmp_dir, "dwg2xls_dump_%s.txt" % tag).replace("\\", "/")
+    for p in (lsp_path.replace("/", "\\"), out_path.replace("/", "\\")):
+        try:
+            if os.path.isfile(p):
+                os.remove(p)
+        except OSError:                            # noqa: BLE001
+            pass
+    lisp = '''(vl-load-com)
+(setq *f* (open "%s" "w"))
+(defun dump-ss (ss / i n e ed tx pt lay sp)
+  (setq i 0 n (sslength ss))
+  (while (< i n)
+    (setq e (ssname ss i))
+    (setq ed (entget e))
+    (setq tx (cdr (assoc 1 ed)))
+    (setq pt (cdr (assoc 10 ed)))
+    (setq lay (cdr (assoc 8 ed)))
+    (setq sp (cdr (assoc 410 ed)))
+    (if (and tx pt)
+      (write-line
+        (strcat
+          (vl-string-translate "|" " " tx)
+          "|" (rtos (car pt) 2 4) "|" (rtos (cadr pt) 2 4)
+          "|" (if lay lay "") "|" (if sp sp ""))
+        *f*))
+    (setq i (1+ i))
+  )
+)
+(setq *ss* (ssget "_X" '((0 . "TEXT,MTEXT,ATTRIB,ATTDEF"))))
+(if *ss* (dump-ss *ss*))
+(close *f*)
+''' % out_path
+    with open(lsp_path.replace("/", "\\"), "w", encoding="ascii") as f:
+        f.write(lisp)
+    try:
+        doc = app.ActiveDocument
+        doc.SendCommand('(load "%s")\n' % lsp_path)
+        out_file = out_path.replace("/", "\\")
+        if not os.path.isfile(out_file):
+            return None
+        raw = open(out_file, "rb").read()
+        try:
+            text = raw.decode("gbk")
+        except UnicodeDecodeError:
+            text = raw.decode("utf-8", errors="replace")
+        ents, seen = [], set()
+        for line in text.splitlines():
+            parts = line.rsplit("|", 4)
+            if len(parts) != 5:
+                continue
+            tx, xs, ys, lay, sp = parts
+            tx = tx.strip()
+            if not tx:
+                continue
+            try:
+                x, y = float(xs), float(ys)
+            except ValueError:
+                continue
+            # 与原 COM 逻辑一致：大图的 ModelSpace 是建筑底图（十几万实体），
+            # 材料表都在布局空间；跳过 MODEL 可避免多识别底图上的零散表格。
+            space_tag = "MODEL" if sp.strip().lower() in ("model", "") else "PAPER"
+            if space_tag == "MODEL":
+                continue
+            key = (round(x, 2), round(y, 2), tx)
+            if key in seen:
+                continue
+            seen.add(key)
+            ents.append({"t": tx, "x": x, "y": y, "kind": "TEXT",
+                         "space": space_tag, "layer": lay.strip()})
+        return ents
+    except Exception:                              # noqa: BLE001
+        return None
+    finally:
+        for p in (lsp_path.replace("/", "\\"), out_path.replace("/", "\\")):
+            try:
+                if os.path.isfile(p):
+                    os.remove(p)
+            except OSError:                        # noqa: BLE001
+                pass
+
+
 def read_entities_com(path: str, app=None):
     """通过 CAD COM 读取所有 TEXT/MTEXT 的插入点与文字；app 可复用以减少启动次数。
 
@@ -192,6 +285,26 @@ def read_entities_com(path: str, app=None):
     try:
         for attempt in range(2):               # 读取端最多 2 次，避免与 load_drawing 叠加成 9 次
             doc = app.Documents.Open(path)
+            # 首选 LISP 进程内批量导出（大图从 88s → 0.3s）；失败才逐实体 COM 遍历
+            ents = read_entities_lisp(path, app)
+            if ents:
+                if len(ents) > len(best):
+                    best = ents
+                n_head = sum(1 for e in ents
+                             if clean_text(e.get("t", "")).strip() in heads)
+                if n_head >= 1 and not detect_tables(ents):
+                    print("  [读取自检] LISP 第%d次读到 %d 实体但 0 张表，"
+                          "重开文档再读…" % (attempt + 1, len(ents)), flush=True)
+                    try:
+                        doc.Close(False)
+                    except Exception:          # noqa: BLE001
+                        pass
+                    continue
+                try:
+                    doc.Close(False)
+                except Exception:              # noqa: BLE001
+                    pass
+                return best
             ents, seen = [], set()
 
             def walk(space, tag):
