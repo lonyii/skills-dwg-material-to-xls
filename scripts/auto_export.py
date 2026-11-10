@@ -99,6 +99,14 @@ def cache_is_fresh(dwg, cache_dir):
         ents = data.get("entities", [])
         if not ents:
             return False
+        # 旧版 LISP 导出遇到 GBK 非法字节会整份退回 UTF-8+replace，中文全变
+        # U+FFFD、表头词丢失（实测 NC26E546 5 页表被判 0 表）。这类乱码缓存
+        # 没有表头词、不会被下面的内容校验发现，必须单独拦截重读。
+        bad = sum(str(e.get("t", "")).count("\ufffd") for e in ents)
+        if bad >= 3:
+            print("  [缓存校验] 缓存文字乱码（%d 处替换符），重新读图：%s" %
+                  (bad, os.path.basename(dwg)), flush=True)
+            return False
         tables = detect_tables(ents)
         if tables:
             return True                       # 缓存有效（含无表头表），直接复用

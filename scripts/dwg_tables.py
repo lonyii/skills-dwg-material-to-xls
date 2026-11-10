@@ -32,6 +32,7 @@ __author__ = "lonyii"
 __email__ = "lonyii@qq.com"
 
 import argparse
+import codecs
 import json
 import os
 import re
@@ -217,10 +218,15 @@ def read_entities_lisp(path: str, app):
         if not os.path.isfile(out_file):
             return None
         raw = open(out_file, "rb").read()
-        try:
-            text = raw.decode("gbk")
-        except UnicodeDecodeError:
-            text = raw.decode("utf-8", errors="replace")
+        # LISP 用 CAD 的 ANSI 代码页写文件（简中为 GBK）。个别图纸的文字里
+        # 夹有 GBK 非法字节（实测 NC26E546 的 0xFD），旧的 gbk 严格解码会整份
+        # 失败、退回 UTF-8+replace，结果所有中文都变成 U+FFFD，表头词全丢、
+        # 5 页材料表识别为 0 张。gb18030 是 GBK 超集，可多吃下这些字节；
+        # 无论哪种编码都用 replace 兜底，保证局部坏字节不毁掉整张图。
+        if raw.startswith(codecs.BOM_UTF8):
+            text = raw.decode("utf-8-sig", errors="replace")
+        else:
+            text = raw.decode("gb18030", errors="replace")
         ents, seen = [], set()
         for line in text.splitlines():
             parts = line.rsplit("|", 4)
