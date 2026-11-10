@@ -84,23 +84,31 @@ def cache_is_fresh(dwg, cache_dir):
     if not cache_dir:
         return False
     cp = cache_path(dwg, cache_dir)
-    if not (os.path.isfile(cp) and os.path.getmtime(cp) >= os.path.getmtime(dwg)):
+    if not os.path.isfile(cp):
         return False
+    # 缓存优先策略：只要缓存能解析出材料表就复用，不强制要求比 DWG 新。
+    # 读 CAD 每张要 1 分钟，缓存是秒级；图纸真改动时由内容校验/用户删缓存处理。
     try:
         data = json.load(open(cp, encoding="utf-8"))
         ents = data.get("entities", [])
+        if not ents:
+            return False
+        tables = detect_tables(ents)
+        if tables:
+            return True                       # 缓存有效（含无表头表），直接复用
+        # 缓存解析出 0 张表：区分「真无表图纸」与「缓存读漏」。
         heads = {"序号", "单位", "数量", "物料描述", "名称"}
         n_head = sum(1 for e in ents
                      if clean_text(e.get("t", "")).strip() in heads)
-        # 有表头关键词却识别不到任何表 → 读取不完整（真实坏缓存常只剩 1 个「序号」）
-        if n_head >= 1 and not detect_tables(ents):
-            print("  [缓存校验] 缓存内容不完整（%d 实体 / %d 表头词但 0 张表），"
+        if n_head >= 1:
+            print("  [缓存校验] 缓存疑似不完整（%d 实体 / %d 表头词但 0 张表），"
                   "重新读图：%s" % (len(ents), n_head, os.path.basename(dwg)),
                   flush=True)
-            return False
+            return False                      # 有表头词却 0 表 → 读漏，重读
+        # 无表头词、也无材料 → 视为真无表图纸（如封面/目录 DWG），直接用缓存不再读
+        return True
     except Exception:                          # noqa: BLE001  缓存损坏也重读
         return False
-    return True
 
 
 def expand_inputs(items, recursive=True):
@@ -216,30 +224,37 @@ def classify_stage(path, ents, tables):
 def load_drawing(path, cache_dir, app=None):
     path = os.path.abspath(path)
     cp = cache_path(path, cache_dir) if cache_dir else None
-    ents, meta, tables = [], {}, []
     heads = {"序号", "单位", "数量", "物料描述", "名称"}
-    for attempt in range(3):                   # COM 偶发漏实体，最多重读 3 次
+
+    def _read_once():
         if cache_dir:
             os.makedirs(cache_dir, exist_ok=True)
             if cache_is_fresh(path, cache_dir):
-                ents, meta = load_entities(path, from_json=cp)
-            else:
-                ents, meta = load_entities(path, cache=cp, app=app)
-        else:
-            ents, meta = load_entities(path, app=app)
-        tables = detect_tables(ents)
-        n_head = sum(1 for e in ents if clean_text(e.get("t", "")).strip() in heads)
-        # 图里有材料表表头词却识别不到表 → COM 读漏了（实测 NC26E213 首次仅 461
-        # 实体、缺竣工表区域）。删掉坏缓存再读一次。
-        if tables or n_head < 1:
-            break
-        print("  [重读] %s 第%d次读到 %d 实体但 0 张表（%d 表头词），重新读图…" %
-              (os.path.basename(path), attempt + 1, len(ents), n_head), flush=True)
+                return load_entities(path, from_json=cp) + ("cache",)
+            return load_entities(path, cache=cp, app=app) + ("cad",)
+        return load_entities(path, app=app) + ("cad",)
+
+    ents, meta, source = _read_once()
+    tables = detect_tables(ents)
+    n_head = sum(1 for e in ents if clean_text(e.get("t", "")).strip() in heads)
+    # 有表头词却 0 表 → 可能读漏。删坏缓存、重读 1 次即止（读取端内部已重试）。
+    if not tables and n_head >= 1 and source == "cad":
         if cp and os.path.isfile(cp):
             try:
                 os.remove(cp)
             except OSError:                    # noqa: BLE001
                 pass
+        ents, meta, source = _read_once()
+        tables = detect_tables(ents)
+        n_head = sum(1 for e in ents if clean_text(e.get("t", "")).strip() in heads)
+        print("  [重读1次] %s：重读后 %d 实体 / %d 张表（仍 0 表则视为无表，"
+              "不再重试）" % (os.path.basename(path), len(ents), len(tables)),
+              flush=True)
+    if not tables:
+        # 明确告知用户：这张图反复读不到材料表，停止重读、继续处理下一张。
+        print("  [警告] %s：未识别到材料表（%d 实体 / %d 表头词），"
+              "本图跳过；若为无表头图纸请检查是否真有材料表。" %
+              (os.path.basename(path), len(ents), n_head), flush=True)
     return {
         "path": path,
         "ents": ents,
@@ -248,6 +263,7 @@ def load_drawing(path, cache_dir, app=None):
         "no": find_project_no(ents, path),
         "name": find_project_name(ents, path),
         "meta": meta,
+        "zero_tables": not tables,
     }
 
 
@@ -480,6 +496,7 @@ def main(argv=None):
     print("\n[1/2] 读取图纸（%d 张，首次读 CAD 每张需 1 分钟左右）…" % len(dwgs), flush=True)
     app, owns = open_cad_app() if need_cad else (None, False)
     infos = []
+    zero_table_drawings = []               # 未识别到材料表的图纸，末尾统一汇总
     try:
         for idx, path in enumerate(dwgs, 1):
             name_i = os.path.basename(path)
@@ -493,6 +510,8 @@ def main(argv=None):
                 print("[跳过] %s 读取失败：%s" % (name_i, str(exc)[:120]))
                 continue
             infos.append(info)
+            if info.get("zero_tables"):
+                zero_table_drawings.append(name_i)
             progress_line(idx, len(dwgs), "已读取 %s（表 %d 张）" % (name_i, len(info["tables"])))
     finally:
         close_cad_app(app, owns)
@@ -620,10 +639,20 @@ def main(argv=None):
         results.append({"file": out, "report": rep, "stats": stats})
         progress_line(gen_done, gen_total, "已生成 %s" % base)
 
+    print("\n========== 识别结果汇总 ==========")
+    print("图纸：%d 张（成功识别 %d 张，未识别 %d 张）" %
+          (len(infos), len(infos) - len(zero_table_drawings), len(zero_table_drawings)))
+    if zero_table_drawings:
+        print("  [未识别到材料表的图纸]（已停止重读，未参与生成）：")
+        for nm in zero_table_drawings:
+            print("    - %s" % nm)
+    print("成品：%s%d 份" % ("计划生成 " if args.dry_run else "", len(results)))
+    for r in results:
+        print("    - %s" % os.path.basename(r["file"]))
+    print("=================================")
     if not results:
         print("没有生成任何文件。")
         return 1
-    print("\n%s共 %d 份材料平差表。" % ("[dry-run] 计划生成 " if args.dry_run else "", len(results)))
     return 0
 
 

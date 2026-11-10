@@ -2,11 +2,12 @@
   "skill": "dwg-material-to-xls",
   "author": "lonyii",
   "email": "lonyii@qq.com",
-  "version": "2.1.5",
+  "version": "2.2.0",
   "released": "2026-11-10",
   "repo": "https://github.com/lonyii/skills-dwg-material-to-xls",
   "branch": "main",
   "changelog": [
+    "2.2.0 (2026-11-10) 新增无表头材料表识别（部分设计院施工图无序号/单位/数量表头行）：detect_headerless_tables 以单位词列聚类定位各栏，parse_headerless 按名称空格规格还原，忽略材质列；NC26E213 施工图从0表恢复为27+8行、竣工匹配从0升到25。缓存改为优先复用（能解析出表即用、不强制更新），坏缓存才重读；读取自检重读≤2次+load_drawing≤1次（不再叠加9次）；0表图纸明确警告并停止重读、末尾输出识别结果汇总。旧三实例268/0/0、IE40行、师大样本保持。",
     "2.1.5 (2026-11-10) run_batch.bat 运行进度实时显示：auto_export.py 新增 --log-file 与 _Tee（输出同步到屏幕和 run_batch.log，不再跑完才打印）；main 分 [1/2] 读取图纸 / [2/2] 生成 两阶段，每张/每组先打印正在处理项，完成打印行式 ASCII 进度条 progress_line（20格+百分比+计数）。实测6图进度16%%→100%%递增、日志同步、括号文件名与旧三实例回归不受影响。",
     "2.1.4 (2026-11-10) 修复 COM 读取偶发漏实体导致缓存不完整（NC26E213 竣工图误判施工图/0表/跳过）：read_entities_com 读完自检（有表头词却0表则重开重读最多3次、取实体最全的一份）；大图判据加文件大小>1.5MB 辅助跳过 ModelSpace（COM Count 不稳）；cache_is_fresh 按内容校验坏缓存强制重读；load_drawing 读到0表删坏缓存重读。验收：NC26E213 从0表恢复为竣工图1表35行，人为坏缓存能被拦截恢复；旧三实例 268/0/0、师大19行保持。",
     "2.1.3 (2026-11-10) 修复 run_batch.bat 拖入文件名含括号时闪退：v2.0.1 加的版本提示 for /f 括号块，以及 if (...) 块内的 %* 展开，遇到文件名中的 \")\" 会被 cmd 当成块结束符，报 \"... was unexpected at this time\" 并退出 255。整个 bat 重构为无括号块结构（全部改 goto 标签），%* 只在裸命令行展开；版本显示改用 findstr 直出。实测带括号文件名从闪退恢复正常处理。",

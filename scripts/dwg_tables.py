@@ -190,7 +190,7 @@ def read_entities_com(path: str, app=None):
     heads = {"序号", "单位", "数量", "物料描述", "名称"}
     best = []
     try:
-        for attempt in range(3):
+        for attempt in range(2):               # 读取端最多 2 次，避免与 load_drawing 叠加成 9 次
             doc = app.Documents.Open(path)
             ents, seen = [], set()
 
@@ -437,6 +437,69 @@ def detect_tables(ents):
                        + 0.1 * abs(u["anchors"]["序号"] - t["anchors"]["序号"]))
             t["stage"] = best["stage"]
             t["stage_inherited"] = True
+    # 回退：标准表头（序号/单位/数量）一张都没识别到时，尝试无表头横向材料表。
+    # 部分设计单位（实测 NC26E213 施工图）的材料表不画表头文字，只有数据行：
+    # 标准号 | 名称 | 规格 | 材料 | 单位 | 数量，且左右两栏并排、序号只在左栏。
+    if not tables:
+        tables = detect_headerless_tables(ents)
+    return tables
+
+
+# 无表头材料表：以「单位词」列聚类定位各栏，按相对单位列的 x 偏移还原名称/规格/数量。
+HEADERLESS_UNITS = {"米", "个", "台", "套", "件", "组", "kg", "千克", "t", "根",
+                    "块", "片", "把", "部", "处", "张", "m", "m²", "只", "支"}
+
+
+def _visual_rows(ents, tol=200):
+    rows = []
+    for e in ents:
+        t = clean_text(e["t"]).strip()
+        if not t:
+            continue
+        placed = False
+        for r in rows:
+            if abs(r["y"] - e["y"]) <= tol:
+                r["items"].append((e["x"], t))
+                placed = True
+                break
+        if not placed:
+            rows.append({"y": e["y"], "items": [(e["x"], t)]})
+    rows.sort(key=lambda r: -r["y"])
+    return rows
+
+
+def detect_headerless_tables(ents):
+    """无表头横向材料表回退识别：返回每栏一张虚拟表（layout=headerless）。
+
+    判据：至少有一个单位词（米/个/台…）在 ≥3 个视觉行的同一 x 列出现。
+    每个这样的列视为一栏材料表，生成虚拟表供 parse_table 分流解析。
+    """
+    rows = _visual_rows(ents)
+    ux_count = {}
+    for r in rows:
+        for x, t in r["items"]:
+            if t in HEADERLESS_UNITS:
+                ux_count.setdefault(round(x / 100) * 100, []).append(r["y"])
+    cands = [(x, len(ys)) for x, ys in ux_count.items() if len(ys) >= 3]
+    cands.sort(key=lambda kv: -kv[1])
+    unit_cols = []
+    for x, n in cands:
+        if all(abs(x - u) > 5000 for u in unit_cols):   # 同列只取一次
+            unit_cols.append(x)
+    if not unit_cols:
+        return []
+    unit_cols.sort()
+    tables = []
+    for i, ux in enumerate(unit_cols, 1):
+        tables.append({
+            "id": i, "layout": "headerless", "stage": "未标注",
+            "header_y": max(r["y"] for r in rows) + 1000,
+            "anchors": {"序号": ux - 12700, "单位": ux, "数量": ux + 1000},
+            "unit_x": ux, "rows": rows,
+            "x_left": ux - 22000, "x_right": ux + 4000,
+            "scale": 1.0, "row_pitch": 800.0, "bounds": {},
+            "title": "", "project": "", "headerless": True,
+        })
     return tables
 
 
@@ -686,12 +749,72 @@ def _valid_unit(s):
             and not re.search(r"\d", s) and not _is_sign_text(s))
 
 
+def _hl_pick(items, lo, hi, pred=None):
+    cand = [(x, t) for x, t in items if lo <= x < hi and (pred is None or pred(t))]
+    return max(cand, key=lambda p: p[0])[1] if cand else ""
+
+
+def parse_headerless(ents, table):
+    """解析无表头横向材料表的一栏（NC26E213 类设计单位图纸）。
+
+    列位置按相对「单位列」的 x 偏移确定：规格约 -6200..-3000，名称约
+    -12500..-6400，材料约 -3000..-1000，标准号更左；数量在单位右侧。
+    描述按成品格式拼成「名称 空格 规格」，忽略材料列。
+    """
+    ux = table["unit_x"]
+    rows = table.get("rows") or _visual_rows(ents)
+    out = []
+    for r in rows:
+        items = sorted(r["items"])
+        unit = next(((x, t) for x, t in items
+                     if t in HEADERLESS_UNITS and abs(x - ux) <= 600), None)
+        if not unit:
+            continue
+        x0 = unit[0]
+        spec = _hl_pick(items, x0 - 6200, x0 - 3000,
+                        lambda t: not re.fullmatch(r"[\d.]+", t))
+        name = _hl_pick(items, x0 - 12500, x0 - 6400,
+                        lambda t: bool(re.search(r"[\u4e00-\u9fff]", t)))
+        # 序号：本栏最左侧的 1~3 位数字；右栏无独立序号时取行内最左序号
+        seq = ""
+        left = [(x, t) for x, t in items if x < x0 - 1000]
+        if left:
+            lx = min(x for x, _ in left)
+            for x, t in sorted(left):
+                if x <= lx + 300 and re.fullmatch(r"\d{1,3}", t):
+                    seq = t
+                    break
+        if not seq:
+            for x, t in items:
+                if t in HEADERLESS_UNITS:
+                    continue
+                if x < x0 - 15000 and re.fullmatch(r"\d{1,3}", t):
+                    seq = t
+                    break
+        qty = None
+        for x, t in sorted(items):
+            if x > x0 + 100:
+                q = parse_qty(t)
+                if q is not None:
+                    qty = q
+                    break
+        desc = (name + " " + spec).strip() if name and spec else (name or spec)
+        if not desc or _is_sign_text(desc):
+            continue
+        out.append({"seq": int(seq) if seq.isdigit() else None,
+                    "desc": desc, "unit": unit[1], "qty": qty,
+                    "is_header": False, "table": table["id"], "stage": table["stage"]})
+    return out
+
+
 def parse_table(ents, table):
     """
     先把文字按 y 聚成「视觉行」，再把每个视觉行按 x 归入各列；
     以带序号的视觉行为记录锚点，把相邻的、无序号的文字行归入最近的锚点。
     这样既能合并拆成两行的物料描述，又不会把相邻行或图签文字串进来。
     """
+    if table.get("headerless"):
+        return parse_headerless(ents, table)
     segs = _split_segments(_seq_entities(ents, table))
     if not segs:
         return []
