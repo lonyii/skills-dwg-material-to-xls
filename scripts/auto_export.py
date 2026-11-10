@@ -526,7 +526,8 @@ def main(argv=None):
         r = force_report or default_report_dir
         return d, r
 
-    print("图纸 %d 张（成品归档到各自图纸目录的「材料平差输出」）" % len(dwgs))
+    print("图纸 %d 张（成品归档到 %s）" % (
+        len(dwgs), force_out or "各自图纸目录的「材料平差输出」"))
 
     # 只在确实需要读 DWG 时启动 CAD，并且整批只启动一次后复用
     need_cad = False

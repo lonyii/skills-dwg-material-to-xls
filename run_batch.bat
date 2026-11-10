@@ -24,8 +24,8 @@ rem    DWG_BATCH_NOCACHE=1   always re-read CAD (ignore cache)
 rem    DWG_BATCH_NODEPS=1    skip startup dependency self-check
 rem =====================================================================
 
-title DWG 材料平差批处理 v2.4.4
-echo  DWG 材料平差批处理 v2.4.4  -  作者 lonyii  lonyii@qq.com
+title DWG 材料平差批处理 v2.4.5
+echo  DWG 材料平差批处理 v2.4.5  -  作者 lonyii  lonyii@qq.com
 
 set "HERE=%~dp0"
 set "SCRIPT=%HERE%scripts\auto_export.py"
@@ -64,6 +64,17 @@ goto AFTERPY
 
 :AFTERPY
 
+rem --- output folder: Desktop\材料平差输出\<date-time> ---------------
+set "DESKTOP=%USERPROFILE%\Desktop"
+if not exist "%DESKTOP%" set "DESKTOP=%USERPROFILE%\桌面"
+for /f "usebackq delims=" %%D in (`powershell -NoProfile -Command "[Environment]::GetFolderPath('Desktop')"`) do set "DESKTOP=%%D"
+set "OUTROOT=%DESKTOP%\材料平差输出"
+for /f "usebackq delims=" %%T in (`powershell -NoProfile -Command "Get-Date -Format yyyyMMdd_HHmmss"`) do set "STAMP=%%T"
+if not defined STAMP set "STAMP=unknown"
+set "OUT=%OUTROOT%\%STAMP%"
+if not exist "%OUTROOT%" mkdir "%OUTROOT%" >nul 2>nul
+if not exist "%OUT%" mkdir "%OUT%" >nul 2>nul
+
 rem --- dependency self-check (Python / pywin32 / CAD / Excel) ------------
 if "%DWG_BATCH_NODEPS%"=="1" goto AFTERDEPS
 if not exist "%DEPS%" goto AFTERDEPS
@@ -85,10 +96,10 @@ echo.
 rem --- run: %* expanded OUTSIDE any ( ... ) block ------------------------
 rem progress prints live here; auto_export.py also tees to %LOG%.
 if "%DWG_BATCH_NOCACHE%"=="1" goto RUNNOCACHE
-%PY% "%SCRIPT%" %* --cache-dir "%CACHE%" %DRYARG% --log-file "%LOG%"
+%PY% "%SCRIPT%" %* --cache-dir "%CACHE%" --out-dir "%OUT%" %DRYARG% --log-file "%LOG%"
 goto AFTERRUN
 :RUNNOCACHE
-%PY% "%SCRIPT%" %* %DRYARG% --log-file "%LOG%"
+%PY% "%SCRIPT%" %* --out-dir "%OUT%" %DRYARG% --log-file "%LOG%"
 :AFTERRUN
 set "RC=%ERRORLEVEL%"
 
@@ -97,7 +108,10 @@ if "%RC%"=="0" goto DONEOK
 echo  完成但有错误（%RC%）；日志：%LOG%
 goto END
 :DONEOK
+echo  成品目录：%OUT%
 echo  完成；日志：%LOG%
+if not "%DRYARG%"=="" goto END
+explorer "%OUT%" >nul 2>nul
 :END
 if not "%DWG_BATCH_NOPAUSE%"=="1" pause
 exit /b %RC%
