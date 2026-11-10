@@ -382,6 +382,40 @@ def choose_row_base(asbuilt, design, single):
     return "asbuilt" if outside / len(extras) > 0.5 else "merged"
 
 
+class _Tee:
+    """同时写到屏幕与日志文件，让批处理窗口能实时看到进度、又保留日志。"""
+
+    def __init__(self, *streams):
+        self.streams = streams
+
+    def write(self, s):
+        for st in self.streams:
+            try:
+                st.write(s)
+                st.flush()
+            except Exception:                  # noqa: BLE001
+                pass
+
+    def flush(self):
+        for st in self.streams:
+            try:
+                st.flush()
+            except Exception:                  # noqa: BLE001
+                pass
+
+
+def progress_line(done, total, label=""):
+    """行式 ASCII 进度条：CMD 里实时可见，日志里也逐行留痕（不用 \\r 覆盖）。"""
+    if total <= 0:
+        return
+    done = max(0, min(done, total))
+    width = 20
+    filled = int(width * done / total)
+    bar = "#" * filled + "." * (width - filled)
+    print("[%s] %3d%% (%d/%d) %s" % (bar, 100 * done // total, done, total, label),
+          flush=True)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description="若干 DWG -> 自动判别并生成材料平差 xls")
     p.add_argument("dwgs", nargs="+",
@@ -401,7 +435,18 @@ def main(argv=None):
     p.add_argument("--no-fill-summary", action="store_true", help="不同步 2-汇总")
     p.add_argument("--report-dir", default=None, help="核对报告目录（默认同输出目录）")
     p.add_argument("--dry-run", action="store_true", help="只打印判别与生成计划")
+    p.add_argument("--log-file", default=None,
+                   help="同时把进度输出到屏幕和该日志文件（run_batch.bat 用）")
     args = p.parse_args(argv)
+
+    # 日志 tee：批处理窗口实时显示进度，同时完整写入 run_batch.log
+    if args.log_file:
+        try:
+            log_f = open(args.log_file, "w", encoding="utf-8", errors="replace")
+            sys.stdout = _Tee(sys.stdout, log_f)
+            sys.stderr = _Tee(sys.stderr, log_f)
+        except OSError:                        # noqa: BLE001  日志不可写则退化为仅屏幕
+            pass
 
     # 文件夹参数递归展开成图纸清单（批处理拖入的核心入口）
     raw_inputs = args.dwgs
@@ -432,19 +477,23 @@ def main(argv=None):
             continue
         need_cad = True
         break
+    print("\n[1/2] 读取图纸（%d 张，首次读 CAD 每张需 1 分钟左右）…" % len(dwgs), flush=True)
     app, owns = open_cad_app() if need_cad else (None, False)
     infos = []
     try:
-        for path in dwgs:
+        for idx, path in enumerate(dwgs, 1):
+            name_i = os.path.basename(path)
+            print("  ▸ 读取 %d/%d：%s" % (idx, len(dwgs), name_i), flush=True)
             if not os.path.isfile(path):
                 print("[跳过] 文件不存在：%s" % path)
                 continue
             try:
                 info = load_drawing(path, args.cache_dir, app=app)
             except Exception as exc:                   # noqa: BLE001
-                print("[跳过] %s 读取失败：%s" % (os.path.basename(path), str(exc)[:120]))
+                print("[跳过] %s 读取失败：%s" % (name_i, str(exc)[:120]))
                 continue
             infos.append(info)
+            progress_line(idx, len(dwgs), "已读取 %s（表 %d 张）" % (name_i, len(info["tables"])))
     finally:
         close_cad_app(app, owns)
     if not infos:
@@ -497,11 +546,16 @@ def main(argv=None):
     single_infos = [i for i in infos if not multi_design.get(id(i))]
     groups = group_drawings(single_infos)
 
-    print("\n工程分组：%d 组" % len(groups))
+    print("\n[2/2] 工程分组：%d 组，开始生成…" % len(groups), flush=True)
     results = []
+    gen_total = len(groups)
+    gen_done = 0
     for no, group in groups.items():
+        gen_done += 1
         ab = [i for i in group if i["stage"] == "asbuilt"]
         sg = [i for i in group if i["stage"] == "design"]
+        cur_name = _name_of(group, "" if (not no or no.startswith("_")) else no)
+        print("  ▸ 生成 %d/%d：%s" % (gen_done, gen_total, cur_name), flush=True)
         # 竣工图为基准：把多工程施工图也纳入本组的候选数据源，
         # 由 rows_of 按本组工程名筛选其中属于本工程的表。
         if ab:
@@ -555,6 +609,7 @@ def main(argv=None):
 
         if args.dry_run:
             results.append({"file": out, "stats": stats})
+            progress_line(gen_done, gen_total, "已计划 %s" % base)
             continue
         write_xls(resolve_template(args.template), out, rows,
                   fill_summary=not args.no_fill_summary)
@@ -563,7 +618,7 @@ def main(argv=None):
             json.dump({"stats": stats, "rows": rows, "extras": extras}, f,
                       ensure_ascii=False, indent=1)
         results.append({"file": out, "report": rep, "stats": stats})
-        print("    已生成：%s" % out)
+        progress_line(gen_done, gen_total, "已生成 %s" % base)
 
     if not results:
         print("没有生成任何文件。")

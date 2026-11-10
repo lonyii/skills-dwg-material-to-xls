@@ -51,23 +51,22 @@ if not exist "%USERPROFILE%\.workbuddy\dwg-entity-cache" mkdir "%USERPROFILE%\.w
 
 set "LOG=%HERE%run_batch.log"
 echo.
-echo  Processing dropped items. CAD and Excel run in the background, please wait...
+echo  Processing dropped items. Progress shows live below, please wait...
 echo.
 if exist "%HERE%version.json" findstr /c:"\"version\"" "%HERE%version.json"
 echo  Using script: %SCRIPT%
 echo.
 
 rem --- run: %* is expanded OUTSIDE any ( ... ) block ----------------------
+rem Progress prints live to this window; auto_export.py also tees to %LOG%.
 if "%DWG_BATCH_NOCACHE%"=="1" goto RUNNOCACHE
-%PY% "%SCRIPT%" %* --cache-dir "%USERPROFILE%\.workbuddy\dwg-entity-cache" %DRYARG% > "%LOG%" 2>&1
+%PY% "%SCRIPT%" %* --cache-dir "%USERPROFILE%\.workbuddy\dwg-entity-cache" %DRYARG% --log-file "%LOG%"
 goto AFTERRUN
 :RUNNOCACHE
-%PY% "%SCRIPT%" %* %DRYARG% > "%LOG%" 2>&1
+%PY% "%SCRIPT%" %* %DRYARG% --log-file "%LOG%"
 :AFTERRUN
 set "RC=%ERRORLEVEL%"
-echo  ---- run log ----
-type "%LOG%"
-echo  -----------------
+echo.
 
 echo.
 if "%RC%"=="0" goto DONEOK

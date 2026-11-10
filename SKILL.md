@@ -55,7 +55,10 @@ python scripts/auto_export.py "文件夹A" "文件夹B"     # 多个文件夹混
 分层目录（`工程A/竣工图/`、`工程A/施工图/`）也能正确判别阶段。
 **脱离 AI 运行**：把文件夹直接拖到技能根目录的 `run_batch.bat` 上，
 批处理会自己找 Python、检查 `pywin32`、调用本脚本并把结果写进 `材料平差输出/`；
-实体缓存按 DWG 修改时间自动失效，日志见 `run_batch.log`。
+实体缓存按 DWG 修改时间自动失效；运行**进度实时显示在批处理窗口**
+（`[1/2] 读取图纸` / `[2/2] 生成`，带 ASCII 进度条与当前文件名），
+完整日志仍同步写入 `run_batch.log`（v2.1.5 起 Python 用 `--log-file` 直接 tee，
+不再等跑完才一次性打印）。
 无人值守可设 `DWG_BATCH_NOPAUSE=1`，只预演可设 `DWG_BATCH_DRYRUN=1`。
 
 脚本自动完成：
