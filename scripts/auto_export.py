@@ -35,6 +35,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 
 if hasattr(sys.stdout, "reconfigure"):
     try:
@@ -264,6 +265,8 @@ def load_drawing(path, cache_dir, app=None):
         "name": find_project_name(ents, path),
         "meta": meta,
         "zero_tables": not tables,
+        # 成品归档到该图纸所在目录下的「材料平差输出」，绝不写脚本目录/当前目录
+        "out_dir": os.path.join(os.path.dirname(path), "材料平差输出"),
     }
 
 
@@ -471,16 +474,20 @@ def main(argv=None):
         print("未找到 .dwg / .dxf 文件，请检查拖入的文件夹。")
         return 1
 
-    if args.out_dir:
-        out_dir = os.path.abspath(args.out_dir)
-    else:
-        first_dir = next((os.path.abspath(x) for x in raw_inputs if os.path.isdir(x)), None)
-        out_dir = os.path.join(first_dir, "材料平差输出") if first_dir else os.getcwd()
-    report_dir = os.path.abspath(args.report_dir or out_dir)
-    print("图纸 %d 张  ->  %s" % (len(dwgs), out_dir))
-    if not args.dry_run:
-        os.makedirs(out_dir, exist_ok=True)
-        os.makedirs(report_dir, exist_ok=True)
+    # 默认成品归档到「每张图纸所在目录/材料平差输出」，绝不写脚本目录/当前目录。
+    # 仅当用户显式给了 --out-dir 时统一覆盖（CLI 场景保留灵活性）。
+    force_out = os.path.abspath(args.out_dir) if args.out_dir else None
+    force_report = os.path.abspath(args.report_dir) if args.report_dir else None
+    # 核对报告是给 AI 内部核对用的中间产物，默认写到系统临时目录，
+    # 不出现在成品目录（用户只看到 .xls）。显式 --report-dir 仍可覆盖。
+    default_report_dir = os.path.join(tempfile.gettempdir(), "dwg2xls-reports")
+
+    def dirs_for(info):
+        d = force_out or info.get("out_dir") or os.path.dirname(info["path"])
+        r = force_report or default_report_dir
+        return d, r
+
+    print("图纸 %d 张（成品归档到各自图纸目录的「材料平差输出」）" % len(dwgs))
 
     # 只在确实需要读 DWG 时启动 CAD，并且整批只启动一次后复用
     need_cad = False
@@ -575,7 +582,12 @@ def main(argv=None):
         name = _name_of(group, "" if no.startswith("_") else no)
         proj_no = "" if no.startswith("_") else no
         base = clean_filename((proj_no + "+" + name) if proj_no else name)
-        out = os.path.join(out_dir, base + ".xls")
+        # 以本组竣工图所在目录为准归档（竣工图是成品基准）
+        group_out, group_report = dirs_for(ab[0] if ab else group[0])
+        if not args.dry_run:
+            os.makedirs(group_out, exist_ok=True)
+            os.makedirs(group_report, exist_ok=True)
+        out = os.path.join(group_out, base + ".xls")
 
         asbuilt = []
         for i in ab:
@@ -617,7 +629,7 @@ def main(argv=None):
             continue
         write_xls(resolve_template(args.template), out, rows,
                   fill_summary=not args.no_fill_summary)
-        rep = os.path.join(report_dir, base + "-核对报告.json")
+        rep = os.path.join(group_report, base + "-核对报告.json")
         with open(rep, "w", encoding="utf-8") as f:
             json.dump({"stats": stats, "rows": rows, "extras": extras}, f,
                       ensure_ascii=False, indent=1)
