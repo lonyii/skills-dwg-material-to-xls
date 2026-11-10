@@ -65,6 +65,14 @@ set "LOG=%HERE%run_batch.log"
 echo.
 echo  Processing dropped items. CAD and Excel run in the background, please wait...
 echo.
+rem --- show skill version so an outdated copy is easy to spot -------------
+if exist "%HERE%version.json" (
+  for /f "usebackq tokens=2 delims=:," %%v in (`findstr /c:"\"version\"" "%HERE%version.json"`) do (
+    echo  dwg-material-to-xls version: %%~v
+  )
+)
+echo  Using script: %SCRIPT%
+echo.
 if "%DWG_BATCH_NOCACHE%"=="1" (
   %PY% "%SCRIPT%" %* %DRYARG% > "%LOG%" 2>&1
 ) else (
