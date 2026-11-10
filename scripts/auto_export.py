@@ -466,12 +466,10 @@ def main(argv=None):
 
     # 文件夹参数递归展开成图纸清单（批处理拖入的核心入口）
     raw_inputs = args.dwgs
-    print("输入路径：%d 个" % len(raw_inputs))
     dwgs = expand_inputs(raw_inputs, recursive=not args.no_recursive)
     if not dwgs:
         print("未找到 .dwg / .dxf 文件，请检查拖入的文件夹。")
         return 1
-    print("共展开 %d 张图纸" % len(dwgs))
 
     if args.out_dir:
         out_dir = os.path.abspath(args.out_dir)
@@ -479,7 +477,7 @@ def main(argv=None):
         first_dir = next((os.path.abspath(x) for x in raw_inputs if os.path.isdir(x)), None)
         out_dir = os.path.join(first_dir, "材料平差输出") if first_dir else os.getcwd()
     report_dir = os.path.abspath(args.report_dir or out_dir)
-    print("输出目录：%s" % out_dir)
+    print("图纸 %d 张  ->  %s" % (len(dwgs), out_dir))
     if not args.dry_run:
         os.makedirs(out_dir, exist_ok=True)
         os.makedirs(report_dir, exist_ok=True)
@@ -493,14 +491,12 @@ def main(argv=None):
             continue
         need_cad = True
         break
-    print("\n[1/2] 读取图纸（%d 张，首次读 CAD 每张需 1 分钟左右）…" % len(dwgs), flush=True)
     app, owns = open_cad_app() if need_cad else (None, False)
     infos = []
     zero_table_drawings = []               # 未识别到材料表的图纸，末尾统一汇总
     try:
         for idx, path in enumerate(dwgs, 1):
             name_i = os.path.basename(path)
-            print("  > 读取 %d/%d：%s" % (idx, len(dwgs), name_i), flush=True)
             if not os.path.isfile(path):
                 print("[跳过] 文件不存在：%s" % path)
                 continue
@@ -512,21 +508,14 @@ def main(argv=None):
             infos.append(info)
             if info.get("zero_tables"):
                 zero_table_drawings.append(name_i)
-            progress_line(idx, len(dwgs), "已读取 %s（表 %d 张）" % (name_i, len(info["tables"])))
+            tag = "竣工" if info["stage"] == "asbuilt" else "施工"
+            progress_line(idx, len(dwgs), "[%s] %s 表%d %s" % (
+                tag, name_i[:24], len(info["tables"]), info["no"] or ""))
     finally:
         close_cad_app(app, owns)
     if not infos:
         print("没有可用图纸。")
         return 1
-
-    print("图纸判别（共 %d 张）：" % len(infos))
-    for i in infos:
-        n_ab = sum(1 for t in i["tables"] if t["stage"] == "竣工图")
-        n_sg = sum(1 for t in i["tables"] if t["stage"] == "施工图")
-        print("  [%s] %s | 表 %d 张（竣工 %d / 施工 %d）| 编号 %s | 名称 %s" % (
-            "竣工图" if i["stage"] == "asbuilt" else "施工图",
-            os.path.basename(i["path"]), len(i["tables"]), n_ab, n_sg,
-            i["no"] or "-", i["name"] or "-"))
 
     # 一张施工图 DWG 可能混放多个工程的材料表（实测师大四食堂 1 张图含 13 个工程）。
     # 这种「多工程图」不能只归到某一个组，而应作为共享数据源供各竣工图按工程名筛选。
@@ -565,7 +554,6 @@ def main(argv=None):
     single_infos = [i for i in infos if not multi_design.get(id(i))]
     groups = group_drawings(single_infos)
 
-    print("\n[2/2] 工程分组：%d 组，开始生成…" % len(groups), flush=True)
     results = []
     gen_total = len(groups)
     gen_done = 0
@@ -574,7 +562,6 @@ def main(argv=None):
         ab = [i for i in group if i["stage"] == "asbuilt"]
         sg = [i for i in group if i["stage"] == "design"]
         cur_name = _name_of(group, "" if (not no or no.startswith("_")) else no)
-        print("  > 生成 %d/%d：%s" % (gen_done, gen_total, cur_name), flush=True)
         # 竣工图为基准：把多工程施工图也纳入本组的候选数据源，
         # 由 rows_of 按本组工程名筛选其中属于本工程的表。
         if ab:
@@ -622,13 +609,11 @@ def main(argv=None):
                       "row_base": base_mode, "single_asbuilt": single,
                       "design_source": "用户施工图文件（竣工图内施工图材料表已忽略）",
                       "drawings": [os.path.basename(i["path"]) for i in group]})
-        print("  %s：竣工 %d 行 / 施工 %d 行 -> 写入 %d 行，行序=%s%s" % (
-            base, len(asbuilt), len(design), len(rows), base_mode,
-            "（单竣工图：施工图量=竣工图量）" if single else ""))
-
+        label = "竣工%d 施工%d -> %d行 %s" % (
+            len(asbuilt), len(design), len(rows), base[:20])
         if args.dry_run:
             results.append({"file": out, "stats": stats})
-            progress_line(gen_done, gen_total, "已计划 %s" % base)
+            progress_line(gen_done, gen_total, label)
             continue
         write_xls(resolve_template(args.template), out, rows,
                   fill_summary=not args.no_fill_summary)
@@ -637,19 +622,12 @@ def main(argv=None):
             json.dump({"stats": stats, "rows": rows, "extras": extras}, f,
                       ensure_ascii=False, indent=1)
         results.append({"file": out, "report": rep, "stats": stats})
-        progress_line(gen_done, gen_total, "已生成 %s" % base)
+        progress_line(gen_done, gen_total, label)
 
-    print("\n========== 识别结果汇总 ==========")
-    print("图纸：%d 张（成功识别 %d 张，未识别 %d 张）" %
-          (len(infos), len(infos) - len(zero_table_drawings), len(zero_table_drawings)))
+    print("识别：%d 张图纸，%s%d 份成品" % (
+        len(infos), "计划 " if args.dry_run else "", len(results)))
     if zero_table_drawings:
-        print("  [未识别到材料表的图纸]（已停止重读，未参与生成）：")
-        for nm in zero_table_drawings:
-            print("    - %s" % nm)
-    print("成品：%s%d 份" % ("计划生成 " if args.dry_run else "", len(results)))
-    for r in results:
-        print("    - %s" % os.path.basename(r["file"]))
-    print("=================================")
+        print("  未识别：%s" % "、".join(zero_table_drawings))
     if not results:
         print("没有生成任何文件。")
         return 1

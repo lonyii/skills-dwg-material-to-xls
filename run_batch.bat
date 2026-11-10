@@ -69,7 +69,7 @@ if errorlevel 1 goto DEPFAIL
 goto AFTERDEPS
 :DEPFAIL
 echo.
-echo  依赖自检未通过，请按上面的提示处理后重试。
+echo  依赖不全，请按上面提示处理后重试。
 if not "%DWG_BATCH_NOPAUSE%"=="1" pause
 :AFTERDEPS
 
@@ -77,12 +77,6 @@ rem --- run arguments -----------------------------------------------------
 set "DRYARG="
 if "%DWG_BATCH_DRYRUN%"=="1" set "DRYARG=--dry-run"
 
-echo.
-echo  正在处理拖入的文件，进度会实时显示在下方，请稍候...
-echo.
-if exist "%HERE%version.json" findstr /c:"\"version\"" "%HERE%version.json"
-echo  使用脚本：%SCRIPT%
-echo  缓存目录：%CACHE%
 echo.
 
 rem --- run: %* expanded OUTSIDE any ( ... ) block ------------------------
@@ -94,23 +88,20 @@ goto AFTERRUN
 %PY% "%SCRIPT%" %* %DRYARG% --log-file "%LOG%"
 :AFTERRUN
 set "RC=%ERRORLEVEL%"
-echo.
 
 echo.
 if "%RC%"=="0" goto DONEOK
-echo  处理完成但有错误（代码 %RC%）。完整日志："%LOG%"
+echo  完成但有错误（%RC%）；日志：%LOG%
 goto END
 :DONEOK
-echo  全部完成。输出文件夹见上方。完整日志："%LOG%"
+echo  完成；日志：%LOG%
 :END
 if not "%DWG_BATCH_NOPAUSE%"=="1" pause
 exit /b %RC%
 
 :NOARGS
 echo.
-echo  用法：把文件夹（或多个 .dwg 文件）拖到本 bat 文件上。
-echo  文件夹内可以包含多个工程的图纸。
-echo  输出文件夹会在开始处理时显示在下方。
+echo  用法：把图纸文件夹或多个 .dwg 文件拖到本 bat 上。
 echo.
 if not "%DWG_BATCH_NOPAUSE%"=="1" pause
 exit /b 1

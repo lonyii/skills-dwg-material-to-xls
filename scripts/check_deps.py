@@ -44,54 +44,57 @@ def com_registered(progid):
 
 def main():
     ok = True
-    print("=" * 46)
-    print("  运行环境自检")
-    print("=" * 46)
-
-    print("Python 版本：%s" % sys.version.split()[0])
+    problems = []
+    pyver = sys.version.split()[0]
     if sys.version_info < (3, 8):
-        print("  [错误] 需要 Python 3.8 及以上，请升级。")
+        problems.append("Python 需 3.8+（当前 %s）" % pyver)
         ok = False
 
     try:
         import win32com.client  # noqa: F401
-        print("pywin32：已安装")
     except ImportError:
-        print("pywin32：[缺失] 正在尝试自动安装……")
         import subprocess
-        r = subprocess.run([sys.executable, "-m", "pip", "install", "pywin32"],
-                           capture_output=True, text=True)
+        subprocess.run([sys.executable, "-m", "pip", "install", "pywin32"],
+                       capture_output=True, text=True)
         try:
             import win32com.client  # noqa: F401
-            print("  pywin32 安装成功")
         except ImportError:
-            print("  [错误] pywin32 自动安装失败，请手动运行：")
-            print("     %s -m pip install pywin32" % sys.executable)
-            print("     %s" % (r.stderr or "").strip()[:200])
+            problems.append("缺少 pywin32：%s -m pip install pywin32" % sys.executable)
             ok = False
 
     cads = [name for pid, name in CAD_PROGIDS if com_registered(pid)]
-    if cads:
-        print("CAD 组件：已检测到 %s" % "、".join(dict.fromkeys(cads)))
-    else:
-        print("CAD 组件：[未检测到] 请先安装并打开一次浩辰/AutoCAD/中望 CAD，")
-        print("  （CAD 首次启动会注册 COM 组件，之后本工具才能读取图纸）")
+    if not cads:
+        problems.append("未检测到 CAD，请安装并打开一次浩辰/AutoCAD/中望 CAD")
         ok = False
 
     excels = [name for pid, name in EXCEL_PROGIDS if com_registered(pid)]
-    if excels:
-        print("表格组件：已检测到 %s" % "、".join(dict.fromkeys(excels)))
-    else:
-        print("表格组件：[未检测到] 请先安装 Microsoft Excel 或 WPS 表格，")
-        print("  （用于生成 .xls 成品；首次打开一次以注册 COM 组件）")
+    if not excels:
+        problems.append("未检测到 Excel/WPS 表格，请安装并打开一次")
         ok = False
 
-    print("-" * 46)
+    # 正常时一行带过；有问题才逐条列出
     if ok:
-        print("自检通过，开始处理图纸……")
+        def short(names):
+            out = []
+            for n in dict.fromkeys(names):
+                if "浩辰" in n:
+                    out.append("浩辰")
+                elif "AutoCAD" in n:
+                    out.append("AutoCAD")
+                elif "中望" in n:
+                    out.append("中望")
+                elif "WPS" in n:
+                    out.append("WPS")
+                elif "Excel" in n:
+                    out.append("Excel")
+                else:
+                    out.append(n)
+            return "/".join(dict.fromkeys(out))
+        print("环境：Python %s | CAD %s | 表格 %s | 正常" % (
+            pyver, short(cads), short(excels)))
     else:
-        print("[依赖不全] 请按上面提示安装缺失项后，重新拖放运行。")
-    print()
+        for p in problems:
+            print("  [缺] %s" % p)
     return 0 if ok else 1
 
 

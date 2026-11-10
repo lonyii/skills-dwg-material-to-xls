@@ -2,11 +2,12 @@
   "skill": "dwg-material-to-xls",
   "author": "lonyii",
   "email": "lonyii@qq.com",
-  "version": "2.4.0",
+  "version": "2.4.1",
   "released": "2026-11-10",
   "repo": "https://github.com/lonyii/skills-dwg-material-to-xls",
   "branch": "main",
   "changelog": [
+    "2.4.1 (2026-11-10) 批处理提示精简工整：自检压成一行（环境：Python|CAD|表格|正常，缺项才逐条列出），去掉脚本/缓存路径与版本噪音、重复空行、大分隔线；读图/生成进度条合并判别信息与行数，每张图/每份成品各一行；汇总压成一行。功能无变化。",
     "2.4.0 (2026-11-10) 读图加速：新增 read_entities_lisp()，用 SendCommand 让 CAD 进程内执行 LISP（ssget+entget）一次性导出全部 TEXT/MTEXT 到 GBK 文本，Python 秒级读取；替代逐实体 COM 往返（6ms/项）。实测师大图 6658 实体从 88s 降到 0.3s、端到端 8-15s，大图提速10倍以上。与原 COM 结果逐条完全一致（同实体/表/描述），跳过 ModelSpace 保持原空间范围；LISP 不可用时自动回退 COM。回归：旧三实例268/0/0、师大279行、IE40行、NC26E213无表头27+8行均保持。",
     "2.3.1 (2026-11-10) 模板文件名改 ASCII（template_summary.xls/template_sample.xls）以兼容任意解压工具：之前中文名在部分 unzip 下乱码导致找不到模板、RC=1；import_materials 用 _asset_file 兼容旧中文名（向后兼容）。",
     "2.3.0 (2026-11-10) 批处理可移植+中文提示：run_batch.bat 全部提示改中文（GBK编码+chcp936，cmd按ANSI解析bat才不乱码，.gitattributes 将 *.bat 标 binary 防git改字节）；新增 scripts/check_deps.py 自检 Python/pywin32/CAD/Excel（注册表只读、不启动CAD）并明确提示；无Python时 winget 自动安装否则给下载指引；pywin32 自动 pip 装；缓存/日志移到技能包目录内（_cache、run_batch.log）实现整包搬移不写用户主目录；进度符号▸改>以兼容GBK。实测解压到任意文件夹可跑、中文显示正常。",
