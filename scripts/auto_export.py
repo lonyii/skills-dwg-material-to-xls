@@ -56,6 +56,11 @@ from import_materials import (  # noqa: E402
 )
 
 PROJ_RE = re.compile(r"[A-Z]{2}\d{2}[A-Z]\d{3}", re.I)
+# 图纸说明里常引用「别的工程」的编号，例如
+#   「碰接点详见：NC24A020 南崇朗翠小区管道燃气工程」
+#   「已建管详见竣工图：NC17B069 黄溪村农民公寓二期燃气工程」
+# 这些都不能当作本图工程编号。
+PROJ_REF_RE = re.compile(r"碰接点|详见|参见|另详|参考|已建|既有|原有|图集|标准图")
 ILLEGAL = re.compile(r'[\\/:*?"<>|\r\n\t]')
 MATCHERS = {"asbuilt": match_rows, "design": match_rows_design_base,
             "merged": match_rows_merged}
@@ -166,7 +171,10 @@ def _label_value(ents, labels, max_len=60):
 def find_project_no(ents, path):
     """
     工程编号：优先文件名，其次图签「项 目 编 号」右侧文字，最后才是全图正则。
-    施工图图签常印有通用图集号/其它编号，不能随便取第一个匹配。
+    图签常印有通用图集号/其它工程的编号，不能随便取第一个匹配：
+      - 「碰接点详见：NC24A020 ××工程」「已建管详见竣工图：NC17B069 ××」是引用；
+      - 「厨房工程(NC26E815)」「配套工程（NC26E813）」这类括号标注才是本工程编号。
+    全图扫描时先排除引用行，再按「括号标注 > 短独立行 > 大段说明」打分取最优。
     """
     m = PROJ_RE.search(os.path.basename(path))
     if m:
@@ -174,11 +182,34 @@ def find_project_no(ents, path):
     m = PROJ_RE.search(_label_value(ents, ("项目编号", "工程编号", "项目号"), 20))
     if m:
         return m.group(0).upper()
+
+    cands = {}                                  # 编号 -> (优先级, -文字长度)
+    counts = {}                                 # 编号 -> 出现次数
     for e in ents:
-        m = PROJ_RE.search(clean_text(e["t"]))
-        if m:
-            return m.group(0).upper()
-    return ""
+        text = clean_text(e.get("t", "")).strip()
+        if not text:
+            continue
+        for m in PROJ_RE.finditer(text):
+            no = m.group(0).upper()
+            ctx = text[max(0, m.start() - 26):m.end() + 26]
+            if PROJ_REF_RE.search(ctx):          # 引用别的工程，跳过
+                continue
+            counts[no] = counts.get(no, 0) + 1
+            score = 0
+            if re.search(r"[\(（]\s*" + re.escape(no) + r"\s*[\)）]", text, re.I):
+                score += 6                       # 工程名后括号标注，最可信
+            if len(text) <= 26:
+                score += 2                       # 独立成行的短标注
+            if len(text) > 120:
+                score -= 3                       # 大段设计说明里的编号多为引用
+            if "工程" in text or "项目" in text:
+                score += 1
+            key = (score, -len(text))
+            if no not in cands or key > cands[no]:
+                cands[no] = key
+    if not cands:
+        return ""
+    return max(cands, key=lambda no: (cands[no][0], counts[no], cands[no][1]))
 
 
 def find_project_name(ents, path):
@@ -523,6 +554,10 @@ def main(argv=None):
     if not infos:
         print("没有可用图纸。")
         return 1
+
+    # 读图阶段与生成阶段之间留出明显间隔，避免两段进度条连在一起难分辨
+    print()
+    print("======== 读图完成，开始匹配竣工 / 施工图并生成材料平差表 ========")
 
     # 一张施工图 DWG 可能混放多个工程的材料表（实测师大四食堂 1 张图含 13 个工程）。
     # 这种「多工程图」不能只归到某一个组，而应作为共享数据源供各竣工图按工程名筛选。
