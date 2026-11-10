@@ -165,75 +165,97 @@ def close_cad_app(app, owns=True):
 
 
 def read_entities_com(path: str, app=None):
-    """通过 CAD COM 读取所有 TEXT/MTEXT 的插入点与文字；app 可复用以减少启动次数。"""
+    """通过 CAD COM 读取所有 TEXT/MTEXT 的插入点与文字；app 可复用以减少启动次数。
+
+    浩辰 COM 遍历偶发漏实体（实测同一张图读到 461 / 1019 两种结果，少的那份缺了
+    竣工表区域）。读取后做完整性自检：若存在材料表表头词、却识别不到任何表，
+    关闭文档重开再读，最多 3 次。大图用文件大小辅助判断是否跳过模型空间，
+    避免 COM Count 误报导致去遍历十几万实体而漏读。
+    """
     owns_app = False
     if app is None:
         app, owns_app = open_cad_app()
 
+    path = os.path.abspath(path)
     try:
-        try:
-            app.Visible = False
-        except Exception:                     # noqa: BLE001
-            pass
-        try:
-            app.DisplayAlerts = False
-        except Exception:                     # noqa: BLE001  浩辰不支持该属性
-            pass
-        doc = app.Documents.Open(os.path.abspath(path))
-        ents = []
-        seen = set()
+        app.Visible = False
+    except Exception:                         # noqa: BLE001
+        pass
+    try:
+        app.DisplayAlerts = False
+    except Exception:                         # noqa: BLE001  浩辰不支持该属性
+        pass
 
-        def walk(space, tag):
-            try:
-                count = space.Count
-            except Exception:                 # noqa: BLE001
-                return
-            for i in range(count):
+    big = os.path.isfile(path) and os.path.getsize(path) > 1_500_000
+    heads = {"序号", "单位", "数量", "物料描述", "名称"}
+    best = []
+    try:
+        for attempt in range(3):
+            doc = app.Documents.Open(path)
+            ents, seen = [], set()
+
+            def walk(space, tag):
                 try:
-                    e = space.Item(i)
-                    name = str(getattr(e, "EntityName", "") or getattr(e, "ObjectName", ""))
-                    if "Text" not in name and "Attribute" not in name:
+                    count = space.Count
+                except Exception:             # noqa: BLE001
+                    return
+                for i in range(count):
+                    try:
+                        e = space.Item(i)
+                        name = str(getattr(e, "EntityName", "") or getattr(e, "ObjectName", ""))
+                        if "Text" not in name and "Attribute" not in name:
+                            continue
+                        txt = clean_text(getattr(e, "TextString", ""))
+                        if not txt:
+                            continue
+                        pt = e.InsertionPoint
+                        x, y = float(pt[0]), float(pt[1])
+                        key = (round(x, 2), round(y, 2), txt)
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        ents.append({"t": txt, "x": x, "y": y,
+                                     "kind": "MTEXT" if "MText" in name else "TEXT",
+                                     "space": tag, "layer": str(getattr(e, "Layer", ""))})
+                    except Exception:         # noqa: BLE001  跳过坏实体
                         continue
-                    txt = clean_text(getattr(e, "TextString", ""))
-                    if not txt:
-                        continue
-                    pt = e.InsertionPoint
-                    x, y = float(pt[0]), float(pt[1])
-                    key = (round(x, 2), round(y, 2), txt)
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    ents.append({"t": txt, "x": x, "y": y,
-                                 "kind": "MTEXT" if "MText" in name else "TEXT",
-                                 "space": tag, "layer": str(getattr(e, "Layer", ""))})
-                except Exception:             # noqa: BLE001  跳过坏实体
-                    continue
 
-        # 大图优化：部分施工图含十几万个实体（建筑底图），逐个 COM 访问会超时。
-        # 材料表文字都在布局空间，ModelSpace 超过阈值时跳过它，只读 PaperSpace/布局。
-        try:
-            model_count = doc.ModelSpace.Count
-        except Exception:                     # noqa: BLE001
-            model_count = 0
-        if model_count > 50000:
-            print("  [大图] ModelSpace %d 实体，跳过模型空间只读布局空间" % model_count,
-                  flush=True)
-        else:
-            walk(doc.ModelSpace, "MODEL")
-        walk(doc.PaperSpace, "PAPER")
-        # 部分 CAD 的 PaperSpace 只对应当前布局，补遍历其他布局
-        try:
-            for lay in doc.Layouts:
-                if str(getattr(lay, "Name", "")).lower() == "model":
-                    continue
-                walk(lay.Block, "LAYOUT")
-        except Exception:                     # noqa: BLE001
-            pass
-        try:
-            doc.Close(False)
-        except Exception:                     # noqa: BLE001
-            pass
-        return ents
+            # 大图优化：建筑底图在 ModelSpace 有十几万实体，逐个 COM 访问会超时/漏读。
+            # 文件大小 >1.5MB 直接跳过；否则再按 COM Count 判断（>50000 跳过）。
+            try:
+                model_count = doc.ModelSpace.Count
+            except Exception:                 # noqa: BLE001
+                model_count = 0
+            if big or model_count > 50000:
+                print("  [大图] %s %d 实体 / %.1fMB，跳过模型空间只读布局空间" %
+                      ("ModelSpace" if model_count > 50000 else "文件",
+                       model_count, os.path.getsize(path) / 1e6), flush=True)
+            else:
+                walk(doc.ModelSpace, "MODEL")
+            walk(doc.PaperSpace, "PAPER")
+            try:
+                for lay in doc.Layouts:
+                    if str(getattr(lay, "Name", "")).lower() == "model":
+                        continue
+                    walk(lay.Block, "LAYOUT")
+            except Exception:                 # noqa: BLE001
+                pass
+            try:
+                doc.Close(False)
+            except Exception:                 # noqa: BLE001
+                pass
+
+            if len(ents) > len(best):
+                best = ents
+            n_head = sum(1 for e in ents
+                         if clean_text(e.get("t", "")).strip() in heads)
+            # 自检：有材料表表头词却识别不到任何表 → 可能是漏读，重试。
+            incomplete = n_head >= 1 and not detect_tables(ents)
+            if not incomplete:
+                break
+            print("  [读取自检] 第%d次读到 %d 实体、%d 表头词但 0 张表，"
+                  "重开文档再读…" % (attempt + 1, len(ents), n_head), flush=True)
+        return best
     finally:
         close_cad_app(app, owns_app)
 

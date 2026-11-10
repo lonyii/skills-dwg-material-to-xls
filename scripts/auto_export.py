@@ -74,11 +74,33 @@ def cache_path(dwg, cache_dir):
 
 
 def cache_is_fresh(dwg, cache_dir):
-    """缓存必须比 DWG 新；图纸被改动时自动重读，避免批处理用到过期数据。"""
+    """缓存必须比 DWG 新且内容完整；图纸改动或缓存读取不全时自动重读。
+
+    COM 读取偶尔只读到部分布局（实测 NC26E213 一份缓存 461 实体、缺了竣工表区域，
+    另一份 1019 实体完整）。这类坏缓存 mtime 比 DWG 新，旧判断会一直复用、导致
+    「表 0 张 / 误判施工图」。这里加内容校验：缓存里有材料表表头关键词、但
+    detect_tables 判 0 张，视为不完整缓存，强制重读。
+    """
     if not cache_dir:
         return False
     cp = cache_path(dwg, cache_dir)
-    return os.path.isfile(cp) and os.path.getmtime(cp) >= os.path.getmtime(dwg)
+    if not (os.path.isfile(cp) and os.path.getmtime(cp) >= os.path.getmtime(dwg)):
+        return False
+    try:
+        data = json.load(open(cp, encoding="utf-8"))
+        ents = data.get("entities", [])
+        heads = {"序号", "单位", "数量", "物料描述", "名称"}
+        n_head = sum(1 for e in ents
+                     if clean_text(e.get("t", "")).strip() in heads)
+        # 有表头关键词却识别不到任何表 → 读取不完整（真实坏缓存常只剩 1 个「序号」）
+        if n_head >= 1 and not detect_tables(ents):
+            print("  [缓存校验] 缓存内容不完整（%d 实体 / %d 表头词但 0 张表），"
+                  "重新读图：%s" % (len(ents), n_head, os.path.basename(dwg)),
+                  flush=True)
+            return False
+    except Exception:                          # noqa: BLE001  缓存损坏也重读
+        return False
+    return True
 
 
 def expand_inputs(items, recursive=True):
@@ -193,16 +215,31 @@ def classify_stage(path, ents, tables):
 
 def load_drawing(path, cache_dir, app=None):
     path = os.path.abspath(path)
-    if cache_dir:
-        os.makedirs(cache_dir, exist_ok=True)
-        cp = cache_path(path, cache_dir)
-        if cache_is_fresh(path, cache_dir):
-            ents, meta = load_entities(path, from_json=cp)
+    cp = cache_path(path, cache_dir) if cache_dir else None
+    ents, meta, tables = [], {}, []
+    heads = {"序号", "单位", "数量", "物料描述", "名称"}
+    for attempt in range(3):                   # COM 偶发漏实体，最多重读 3 次
+        if cache_dir:
+            os.makedirs(cache_dir, exist_ok=True)
+            if cache_is_fresh(path, cache_dir):
+                ents, meta = load_entities(path, from_json=cp)
+            else:
+                ents, meta = load_entities(path, cache=cp, app=app)
         else:
-            ents, meta = load_entities(path, cache=cp, app=app)
-    else:
-        ents, meta = load_entities(path, app=app)
-    tables = detect_tables(ents)
+            ents, meta = load_entities(path, app=app)
+        tables = detect_tables(ents)
+        n_head = sum(1 for e in ents if clean_text(e.get("t", "")).strip() in heads)
+        # 图里有材料表表头词却识别不到表 → COM 读漏了（实测 NC26E213 首次仅 461
+        # 实体、缺竣工表区域）。删掉坏缓存再读一次。
+        if tables or n_head < 1:
+            break
+        print("  [重读] %s 第%d次读到 %d 实体但 0 张表（%d 表头词），重新读图…" %
+              (os.path.basename(path), attempt + 1, len(ents), n_head), flush=True)
+        if cp and os.path.isfile(cp):
+            try:
+                os.remove(cp)
+            except OSError:                    # noqa: BLE001
+                pass
     return {
         "path": path,
         "ents": ents,

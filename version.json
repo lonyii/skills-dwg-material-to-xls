@@ -2,11 +2,12 @@
   "skill": "dwg-material-to-xls",
   "author": "lonyii",
   "email": "lonyii@qq.com",
-  "version": "2.1.3",
+  "version": "2.1.4",
   "released": "2026-11-10",
   "repo": "https://github.com/lonyii/skills-dwg-material-to-xls",
   "branch": "main",
   "changelog": [
+    "2.1.4 (2026-11-10) 修复 COM 读取偶发漏实体导致缓存不完整（NC26E213 竣工图误判施工图/0表/跳过）：read_entities_com 读完自检（有表头词却0表则重开重读最多3次、取实体最全的一份）；大图判据加文件大小>1.5MB 辅助跳过 ModelSpace（COM Count 不稳）；cache_is_fresh 按内容校验坏缓存强制重读；load_drawing 读到0表删坏缓存重读。验收：NC26E213 从0表恢复为竣工图1表35行，人为坏缓存能被拦截恢复；旧三实例 268/0/0、师大19行保持。",
     "2.1.3 (2026-11-10) 修复 run_batch.bat 拖入文件名含括号时闪退：v2.0.1 加的版本提示 for /f 括号块，以及 if (...) 块内的 %* 展开，遇到文件名中的 \")\" 会被 cmd 当成块结束符，报 \"... was unexpected at this time\" 并退出 255。整个 bat 重构为无括号块结构（全部改 goto 标签），%* 只在裸命令行展开；版本显示改用 findstr 直出。实测带括号文件名从闪退恢复正常处理。",
     "2.1.2 (2026-11-10) 修复老图纸扁表格把设计师姓名当物料：师大南路 NC15I061 原只识别 1 行「毕倩如」。扁表格（比例<0.1）old 布局序号列右界从 seq+600*scale 收紧为 seq+2，物料不再误归序号列；parse_table 按视觉 y 整行排除图签行（编制/校核/审核/日期+人名，容差 0.6 避免误删材料行）。从 1 行恢复为 29 行正确材料；旧三实例、IE26I004、师大样本回归保持。",
     "2.1.1 (2026-11-10) 补充作者信息：version.json 增加 author/email 字段，SKILL.md frontmatter 增加 author/email，README.md 标注作者，6 个 Python 脚本增加 __author__/__email__ 元数据。功能无变化。",
