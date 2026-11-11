@@ -990,6 +990,17 @@ def parse_table(ents, table):
         near = [seg for seg in segs if 0 <= (hy - _top(seg)) <= 6000 * sc]
         if near:
             segs = near
+    # 表头上方还可能有「图纸目录」等带序号的其它表格，序号列 x 相同会被
+    # _seq_entities 一并抓进来（实测 NC26E761 设计图：page2 表头 y=47127，
+    # 却混入了 y 55703~76503 的图纸目录 1~28）。这些远端段的 y 中点会把
+    # 「段区间」算反、使本页 0 行。若存在紧贴本表表头的段，只保留表头下方
+    # 及紧邻的段，丢弃远在表头上方的其它表格段。
+    if len(segs) > 1:
+        hy = table["header_y"]
+        keep = [seg for seg in segs
+                if max(s["y"] for s in seg) <= hy + 2000 * sc]
+        if keep:
+            segs = keep
     all_y = [s["y"] for seg in segs for s in seg]
     y_lo, y_hi = min(all_y) - 900 * sc, max(all_y) + 900 * sc
 

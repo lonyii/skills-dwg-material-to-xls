@@ -24,8 +24,8 @@ rem    DWG_BATCH_NOCACHE=1   always re-read CAD (ignore cache)
 rem    DWG_BATCH_NODEPS=1    skip startup dependency self-check
 rem =====================================================================
 
-title DWG 材料平差批处理 v2.4.6
-echo  DWG 材料平差批处理 v2.4.6  -  作者 lonyii  lonyii@qq.com
+title DWG 材料平差批处理 v2.4.7
+echo  DWG 材料平差批处理 v2.4.7  -  作者 lonyii  lonyii@qq.com
 
 set "HERE=%~dp0"
 set "SCRIPT=%HERE%scripts\auto_export.py"
