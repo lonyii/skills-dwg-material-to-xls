@@ -594,6 +594,12 @@ def main(argv=None):
         cores = [_core_name(p) for p in projects]
         nested = any(a in b or b in a
                      for k, a in enumerate(cores) for b in cores[k + 1:])
+        # 编号唯一可靠：并排表各有不同「项目编号」时（实测 NC26E466 与
+        # NC26E463 只差店名后缀「厨房/外管配套」，核心名互为子串），
+        # 不能因工程名看起来嵌套就当作单工程图，否则会串表。
+        nos = {t.get("no", "").upper() for t in i["tables"] if t.get("no")}
+        if len(nos) > 1:
+            nested = False
         hit_ab = set()
         for ab in ab_infos:
             for t in i["tables"]:

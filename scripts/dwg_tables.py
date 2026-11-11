@@ -797,19 +797,23 @@ def detect_table_no(ents, header, x_left, x_right, scale=1.0):
     「庭院」「（室内接管）」等字样。找不到返回 ""。
     """
     seq_x = header["anchors"]["序号"]
+    lo = seq_x - 2000 * scale
+    hi = x_right + 16000 * scale
+    own_hi = x_right + 2000 * scale       # 本表右边界附近才算本表图签
+    found = []                            # (标签x, 编号)
     labels = []
     for e in ents:
         dy = e["y"] - header["y"]
         if not (1000 * scale <= dy <= 5200 * scale):
             continue
-        if not (seq_x - 2000 * scale <= e["x"] <= x_right + 16000 * scale):
+        if not (lo <= e["x"] <= hi):
             continue
         t = clean_text(e["t"]).strip()
         # 标签与值写在同一实体：项目编号:NC26C002
         m = re.match(r"^(?:项目编号|工程编号|项目号)\s*[:：]?\s*"
                      r"([A-Z]{2}\d{2}[A-Z]\d{3})", t, re.I)
         if m:
-            return m.group(1).upper()
+            found.append((e["x"], m.group(1).upper()))
         if re.sub(r"\s+", "", t) in ("项目编号", "工程编号", "项目号"):
             labels.append(e)
     for lab in labels:
@@ -819,8 +823,18 @@ def detect_table_no(ents, header, x_left, x_right, scale=1.0):
         for e in cands:
             m = _TABLE_NO_RE.search(clean_text(e["t"]))
             if m:
-                return m.group(0).upper()
-    return ""
+                found.append((lab["x"], m.group(0).upper()))
+                break
+    if not found:
+        return ""
+    # 并排多表时宽窗口会抓到隔壁表的「项目编号」（实测 NC26E466 设计图
+    # 左表错取右表的 NC26E463）。优先取标签位于本表 x 范围内的编号；
+    # 本表范围内没有时（图签在表外）才退回离本表右边界最近的一个。
+    own = [no for x, no in found if x_left - 2000 * scale <= x <= own_hi]
+    if own:
+        return own[0]
+    found.sort(key=lambda p: abs(p[0] - x_right))
+    return found[0][1]
 
 
 def _estimate_row_pitch(ents, table):
