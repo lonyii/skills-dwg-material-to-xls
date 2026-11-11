@@ -309,19 +309,21 @@ def load_drawing(path, cache_dir, app=None):
     }
 
 
-def _project_match(table_project, target_name, target_no=""):
+def _project_match(table_project, target_name, target_no="", table_no=""):
     """
-    判断材料表标注的工程是否属于目标工程。
-    一张施工图常混放多个工程的表，按表头附近的工程名（table["project"]）匹配
-    目标竣工图的工程名/编号，避免把别的工程材料并进来。
+    判断材料表是否属于目标工程。
+    一张施工图常混放多个工程的表。表图签上的「项目编号」唯一且最可靠，
+    优先按编号精确比对；没有编号时才退回工程名精确/包含匹配。
+    绝不使用模糊相似度（如「三米粥铺」vs「面夫子」会误匹配）。
     """
+    # 编号双方都有：唯一且精确，直接定论（避免相似工程名串表）
+    if table_no and target_no:
+        return table_no.upper() == target_no.upper()
     if not table_project:
         return False                      # 未标注工程名的表不参与多工程图纸的匹配
     tp, tn = _flat(table_project), _flat(target_name)
     if not tn:
         return False
-    # 只做精确/包含匹配：同一张图里多个工程名只差店名前缀（如「三米粥铺」
-    # vs「面夫子」），相似度会误匹配，绝不能用模糊相似度。
     if tp == tn or (len(tp) >= 8 and len(tn) >= 8 and (tp in tn or tn in tp)):
         return True
     # 编号出现在表工程名里也视为匹配（编号唯一，可靠）
@@ -344,7 +346,8 @@ def rows_of(info, stage, target_project=None, target_no="",
     # 先按工程名筛（若给出）：匹配到就只在这些表里继续
     if target_project:
         matched = [t for t in tables
-                   if _project_match(t.get("project", ""), target_project, target_no)]
+                   if _project_match(t.get("project", ""), target_project, target_no,
+                                     t.get("no", ""))]
         # 竣工图老图纸的竣工表常无工程名标注（project 为空），它们本就属于本图，
         # 需保留，否则会把真正的竣工表筛掉（实测 IC24H201）。
         if keep_unmarked_project:
@@ -594,7 +597,8 @@ def main(argv=None):
         hit_ab = set()
         for ab in ab_infos:
             for t in i["tables"]:
-                if _project_match(t.get("project", ""), ab["name"], ab["no"]):
+                if _project_match(t.get("project", ""), ab["name"], ab["no"],
+                                  t.get("no", "")):
                     hit_ab.add(ab["path"])
                     break
         if nested or not hit_ab:

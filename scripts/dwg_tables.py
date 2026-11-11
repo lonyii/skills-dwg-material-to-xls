@@ -502,6 +502,7 @@ def detect_tables(ents):
             "stage": detect_stage(ents, h, x_left, x_right, sc),
             "title": detect_title(ents, h, x_left, x_right, sc),
             "project": detect_table_project(ents, h, x_left, x_right, sc),
+            "no": detect_table_no(ents, h, x_left, x_right, sc),
         }
         table["row_pitch"] = _estimate_row_pitch(ents, table)
         tables.append(table)
@@ -769,7 +770,11 @@ def detect_table_project(ents, header, x_left, x_right, scale=1.0):
         t = clean_text(e["t"]).strip()
         if not (8 <= len(t) <= 48):
             continue
-        if not any(t.endswith(sx) for sx in _PROJECT_SUFFIXES):
+        # 工程名可能带括号后缀，如「…铸铁管改造工程（室内接管）」（实测 NC26C002）。
+        # 去掉尾部括号后再判断是否以「工程」结尾，否则这张表会被判为无工程名，
+        # 进而被误并入同图另一工程。
+        probe = re.sub(r"[（(][^）)]*[）)]\s*$", "", t)
+        if not any(probe.endswith(sx) for sx in _PROJECT_SUFFIXES):
             continue
         if any(bad in t for bad in ("设计有限公司", "设计院", "通用图集", "技术标准",
                                      "燃气集团", "建设单位", "项目名称", "项 目 名 称")):
@@ -780,6 +785,42 @@ def detect_table_project(ents, header, x_left, x_right, scale=1.0):
         return ""
     cands.sort(key=lambda x: (x[0], x[1]))
     return cands[0][2]
+
+
+_TABLE_NO_RE = re.compile(r"[A-Z]{2}\d{2}[A-Z]\d{3}", re.I)
+
+
+def detect_table_no(ents, header, x_left, x_right, scale=1.0):
+    """
+    从本表图签的「项目编号」右侧取工程编号（如 NC26C002）。
+    一张 DWG 并排多个工程时，编号比工程名更可靠：两个工程名可能只差
+    「庭院」「（室内接管）」等字样。找不到返回 ""。
+    """
+    seq_x = header["anchors"]["序号"]
+    labels = []
+    for e in ents:
+        dy = e["y"] - header["y"]
+        if not (1000 * scale <= dy <= 5200 * scale):
+            continue
+        if not (seq_x - 2000 * scale <= e["x"] <= x_right + 16000 * scale):
+            continue
+        t = clean_text(e["t"]).strip()
+        # 标签与值写在同一实体：项目编号:NC26C002
+        m = re.match(r"^(?:项目编号|工程编号|项目号)\s*[:：]?\s*"
+                     r"([A-Z]{2}\d{2}[A-Z]\d{3})", t, re.I)
+        if m:
+            return m.group(1).upper()
+        if re.sub(r"\s+", "", t) in ("项目编号", "工程编号", "项目号"):
+            labels.append(e)
+    for lab in labels:
+        cands = [e for e in ents if abs(e["y"] - lab["y"]) <= 500
+                 and e["x"] > lab["x"] + 100]
+        cands.sort(key=lambda e: e["x"] - lab["x"])
+        for e in cands:
+            m = _TABLE_NO_RE.search(clean_text(e["t"]))
+            if m:
+                return m.group(0).upper()
+    return ""
 
 
 def _estimate_row_pitch(ents, table):
