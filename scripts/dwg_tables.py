@@ -1009,6 +1009,13 @@ def parse_table(ents, table):
     # 先找签名标签（编制/校核/审核/日期…）所在的视觉 y，再把同 y 的人名一并排除。
     sign_ys = [e["y"] for e in ents
                if y_lo <= e["y"] <= y_hi and _is_sign_text(clean_text(e["t"]).strip())]
+    # 极扁表格（实测 NC26H037 scale=0.01、行距 4）里标签与人名分处相邻两个视觉行，
+    # 差距约半行（2），旧容差 0.6 抓不到，导致「殷 婷 / 李 颖」被当成 seq29 物料。
+    # 只对扁表格放宽到半行距，正常表格仍保持 0.6，避免误删紧邻材料行。
+    sign_tol = 0.6
+    pitch0 = table.get("row_pitch", 0.0)
+    if pitch0 and pitch0 < 100:
+        sign_tol = max(0.6, min(pitch0 * 0.6, 300 * sc))
 
     items = []
     for e in ents:
@@ -1019,9 +1026,10 @@ def parse_table(ents, table):
         t = clean_text(e["t"]).strip()
         if not t:
             continue
-        # 容差取 0.6：签名标签与人名插入点 y 完全相同，而相邻材料行至少差 4，
+        # 默认 0.6：签名标签与人名插入点 y 完全相同，而相邻材料行至少差 4，
         # 用 2 会误删紧邻的材料行（实测师大南路 DN40 被删）。
-        if any(abs(e["y"] - sy) <= 0.6 for sy in sign_ys):
+        # 扁表格用 sign_tol（半行距）覆盖「标签在上、人名在下一行」的排版。
+        if any(abs(e["y"] - sy) <= sign_tol for sy in sign_ys):
             continue
         items.append((e["y"], e["x"], t))
     items.sort(key=lambda a: (-a[0], a[1]))
