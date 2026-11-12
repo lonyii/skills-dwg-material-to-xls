@@ -471,10 +471,16 @@ def detect_tables(ents):
     headers.sort(key=lambda h: (-round(h["y"] / 1000), h["anchors"]["序号"]))
 
     # 去重（同一表头可能被多个布局重复遍历到）
+    # 注意：旧代码把 y 容差写死 200（图形单位），在极扁图框（实测 NC26B009
+    # 序号→单位仅 50.6、行距 4）里，上下叠页表头 y 只差 150 就会被误判为
+    # 同一表头，直接丢掉一整页。y/x 两个维度都必须按图框比例缩放：
+    # 正常图 scale≈1 时 y 容差仍为 200，行为与旧版完全一致。
     uniq = []
     for h in headers:
-        lim = 5000 * _table_scale(h["anchors"])
-        if not any(abs(h["y"] - u["y"]) < 200 and
+        sc_h = _table_scale(h["anchors"])
+        lim = 5000 * sc_h
+        y_tol = 200 * sc_h
+        if not any(abs(h["y"] - u["y"]) < y_tol and
                    abs(h["anchors"]["序号"] - u["anchors"]["序号"]) < lim for u in uniq):
             uniq.append(h)
 
@@ -817,13 +823,25 @@ def detect_table_page(ents, header, x_left, x_right, scale=1.0):
     标签右侧的独立数字实体（实测 NC26E546：标签 y=13158，右侧 770 处为
     页码，右侧约 3700 处为总页数「5」）。只认「第」标签右侧最近的数字，
     不会把「共」的总页数当成本页页码。找不到返回 None。
+
+    比例必须用「本表序号→单位」的真实列距换算，不能用 _table_scale 的
+    钳制值：后者下限 0.01，而极扁图框（实测 NC26B009，列距仅 50.6、
+    行距 4）真实比例约 0.005，图签相对表头只高 6.6（<1000*0.01=10），
+    旧代码因此扫不到「第页」标签，page 全为 None，页序退化成按 x 排序
+    （竣工图拼成 3-2 的错序）。正常图 fs≈scale，行为完全不变。
     """
+    w = header["anchors"]["单位"] - header["anchors"]["序号"]
+    fs = w / REF_SEQ_UNIT if w > 0 else 0.0
+    if fs <= 0:
+        fs = scale
     labels = []
     for e in ents:
-        dy = e["y"] - header["y"]
-        if not (1000 * scale <= dy <= 6000 * scale):
+        if "x" not in e or "y" not in e:
             continue
-        if not (x_left - 2000 * scale <= e["x"] <= x_right + 4000 * scale):
+        dy = e["y"] - header["y"]
+        if not (1000 * fs <= dy <= 6000 * fs):
+            continue
+        if not (x_left - 2000 * fs <= e["x"] <= x_right + 4000 * fs):
             continue
         t = re.sub(r"\s+", "", clean_text(e["t"]).strip())
         m = re.fullmatch(r"第(\d{1,2})页", t)       # 页码与标签写在同一实体
@@ -835,8 +853,9 @@ def detect_table_page(ents, header, x_left, x_right, scale=1.0):
             labels.append(e)
     for lab in labels:
         cands = [e for e in ents
-                 if 0 < e["x"] - lab["x"] <= 2200 * scale
-                 and abs(e["y"] - lab["y"]) <= 1600 * scale
+                 if "x" in e and "y" in e
+                 and 0 < e["x"] - lab["x"] <= 2200 * fs
+                 and abs(e["y"] - lab["y"]) <= 1600 * fs
                  and re.fullmatch(r"\d{1,2}", clean_text(e["t"]).strip())]
         cands.sort(key=lambda e: (abs(e["y"] - lab["y"]), e["x"] - lab["x"]))
         for e in cands:
@@ -1074,6 +1093,22 @@ def parse_table(ents, table):
                 if max(s["y"] for s in seg) <= hy + 2000 * sc]
         if keep:
             segs = keep
+    # 同一表头下还可能在「下方」混入另一张带序号的表：实测 NC26B009 施工图
+    # 第2页（y=614、序号列 x=2948.9）正下方 y=470/350 的「图纸目录」序号列
+    # x=2947.7 与本表几乎重合，被 _seq_entities 一起抓进来，多出 23 行目录。
+    # 真正的本表段首行紧贴表头（dy 约 6），目录段首行远在 100 以外。
+    # 当存在紧贴表头的段时，只保留离表头最近的那一段；
+    # 阈值按实测行距自适应（扁图行距 4 → 容差 40），正常图不会误切跨页长表。
+    if len(segs) > 1:
+        hy = table["header_y"]
+        pitch = table.get("row_pitch", 0.0) or 800.0
+        near_tol = max(6000 * sc, 10 * pitch)
+        def _seg_top(seg):
+            return max(s["y"] for s in seg)
+        near = [seg for seg in segs if 0 <= (hy - _seg_top(seg)) <= near_tol]
+        if near:
+            best = min(near, key=lambda seg: hy - _seg_top(seg))
+            segs = [best]
     all_y = [s["y"] for seg in segs for s in seg]
     y_lo, y_hi = min(all_y) - 900 * sc, max(all_y) + 900 * sc
 
