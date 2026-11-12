@@ -503,9 +503,22 @@ def detect_tables(ents):
             "title": detect_title(ents, h, x_left, x_right, sc),
             "project": detect_table_project(ents, h, x_left, x_right, sc),
             "no": detect_table_no(ents, h, x_left, x_right, sc),
+            "page": detect_table_page(ents, h, x_left, x_right, sc),
         }
         table["row_pitch"] = _estimate_row_pitch(ents, table)
         tables.append(table)
+
+    # 同列上下叠放的多页表：给上方表设「数据区下界」= 下方紧邻表的表头 y。
+    # 否则 _seq_entities 的 42000*sc 搜索窗会把下方表的序号一并吞进来，
+    # 同一批材料被上下两张表各解析一次（实测 NC26E546：T1 吞入 T5 的 1~14 行）。
+    # 判定「同列」用序号锚点 x 接近（< 2500*sc），不影响左右并排的多栏表。
+    for t in tables:
+        below = [u for u in tables
+                 if u["id"] != t["id"]
+                 and abs(u["anchors"]["序号"] - t["anchors"]["序号"]) < 2500 * t["scale"]
+                 and u["header_y"] < t["header_y"]]
+        if below:
+            t["y_floor"] = max(u["header_y"] for u in below)
 
     # 记录每张表的序号走向与范围，供多表拼接排序使用：
     # top-down = 序号1在最上（沿 y 递减方向递增）；bottom-up = 序号1在最下。
@@ -637,6 +650,12 @@ def order_tables(tables):
     tables = list(tables)
     if len(tables) <= 1:
         return tables
+    # 图签标了「第 X 页」时页码是作者的权威顺序，优先于空间位置。
+    # 实测 NC26E546 五页在图上排布为 3-4-1-5-2，按 x/序号走向排会错序。
+    pages = [t.get("page") for t in tables]
+    if all(isinstance(p, int) and 1 <= p <= 99 for p in pages) \
+            and len(set(pages)) == len(pages):
+        return sorted(tables, key=lambda t: t["page"])
     mins = [t.get("seq_min", 9999) for t in tables]
     # 序号连贯：各表起始序号不同，且按起始排序后前一表的最大序号紧接后一表的最小序号
     # （区间首尾相接、不重叠），如 1-26 / 27-52。
@@ -790,6 +809,43 @@ def detect_table_project(ents, header, x_left, x_right, scale=1.0):
 _TABLE_NO_RE = re.compile(r"[A-Z]{2}\d{2}[A-Z]\d{3}", re.I)
 
 
+def detect_table_page(ents, header, x_left, x_right, scale=1.0):
+    """
+    从图签「第  页 / 共  页」里取本表页码。
+
+    这类图签把「第  页」「共  页」写成两个标签实体，页码/总页数是紧挨在
+    标签右侧的独立数字实体（实测 NC26E546：标签 y=13158，右侧 770 处为
+    页码，右侧约 3700 处为总页数「5」）。只认「第」标签右侧最近的数字，
+    不会把「共」的总页数当成本页页码。找不到返回 None。
+    """
+    labels = []
+    for e in ents:
+        dy = e["y"] - header["y"]
+        if not (1000 * scale <= dy <= 6000 * scale):
+            continue
+        if not (x_left - 2000 * scale <= e["x"] <= x_right + 4000 * scale):
+            continue
+        t = re.sub(r"\s+", "", clean_text(e["t"]).strip())
+        m = re.fullmatch(r"第(\d{1,2})页", t)       # 页码与标签写在同一实体
+        if m:
+            n = int(m.group(1))
+            if 1 <= n <= 30:
+                return n
+        if t == "第页":                              # 页码是右侧的独立实体
+            labels.append(e)
+    for lab in labels:
+        cands = [e for e in ents
+                 if 0 < e["x"] - lab["x"] <= 2200 * scale
+                 and abs(e["y"] - lab["y"]) <= 1600 * scale
+                 and re.fullmatch(r"\d{1,2}", clean_text(e["t"]).strip())]
+        cands.sort(key=lambda e: (abs(e["y"] - lab["y"]), e["x"] - lab["x"]))
+        for e in cands:
+            n = int(clean_text(e["t"]).strip())
+            if 1 <= n <= 30:
+                return n
+    return None
+
+
 def detect_table_no(ents, header, x_left, x_right, scale=1.0):
     """
     从本表图签的「项目编号」右侧取工程编号（如 NC26C002）。
@@ -864,10 +920,13 @@ def _seq_entities(ents, table):
     sc = table.get("scale", 1.0)
     hy = table["header_y"]
     out = []
+    y_floor = table.get("y_floor")   # 同列下方紧邻表头：本表数据不得越过
     for e in ents:
         if not (lo <= e["x"] < hi):
             continue
         if abs(e["y"] - hy) > 42000 * sc:
+            continue
+        if y_floor is not None and e["y"] < y_floor:
             continue
         t = clean_text(e["t"]).strip()
         if re.fullmatch(r"\d{1,3}", t):
@@ -1065,7 +1124,15 @@ def parse_table(ents, table):
         for _, x, t in ln["items"]:
             for key, (blo, bhi) in bounds.items():
                 if blo <= x < bhi:
-                    cols[key].append(t)
+                    # 超长的名称（实测 NC26E546「可燃气体探测器探头（含控制器）…
+                    # C2-镀锌管」）左端会越过描述列左界、落进序号列。序号列里
+                    # 的非数字文字不是序号也不是图签，并入描述列，避免整行漏项。
+                    if key == "序号" and "物料描述" in cols \
+                            and not re.fullmatch(r"\d{1,3}", t) \
+                            and len(t) >= 2 and not _is_sign_text(t):
+                        cols["物料描述"].append(t)
+                    else:
+                        cols[key].append(t)
                     break
         seqs = [t for t in cols.get("序号", []) if re.fullmatch(r"\d{1,3}", t)]
         ln["seq"] = int(seqs[0]) if seqs and not ln["is_header_line"] else None
@@ -1095,13 +1162,36 @@ def parse_table(ents, table):
 
     # 上下两段续表共用表头时，段区间用相邻段中点切开，避免同一视觉行被解析两次
     seg_ranges = []
+    def _seg_boundary(cur, other):
+        """两段在 y 上相邻时的分界线。
+
+        segs 的顺序按序号走向，可能是从上到下（当前段在上方），也可能是从下到上
+        （当前段在下方）。旧代码固定用「当前段最大 y + 另一段最小 y」求中点，
+        在当前段位于上方时会错用两段的外侧边界，把当前段绝大部分行切掉
+        （实测 NC26E546 施工图材料表 29 行只剩 1 行）。这里按相对位置取两段
+        最近的内侧边界求中点。
+        """
+        cy = [s["y"] for s in cur]
+        oy = [s["y"] for s in other]
+        if min(cy) > max(oy):          # 当前段在上方
+            return (min(cy) + max(oy)) / 2
+        return (max(cy) + min(oy)) / 2  # 当前段在下方
+
+    def _apply_boundary(lo, hi, ys, b):
+        """把相邻段分界线只作用在当前段的外侧，避免反向截断本段行。"""
+        if b <= min(ys):
+            return max(lo, b), hi      # 邻段在下方：约束下界
+        if b >= max(ys):
+            return lo, min(hi, b)      # 邻段在上方：约束上界
+        return lo, hi                  # 两段 y 重叠时不强行切割
+
     for k, seg in enumerate(segs):
         ys = [s["y"] for s in seg]
         lo, hi = min(ys) - 700 * sc, max(ys) + 700 * sc
         if k > 0:
-            lo = max(lo, (max(s["y"] for s in segs[k - 1]) + min(ys)) / 2)
+            lo, hi = _apply_boundary(lo, hi, ys, _seg_boundary(seg, segs[k - 1]))
         if k + 1 < len(segs):
-            hi = min(hi, (max(ys) + min(s["y"] for s in segs[k + 1])) / 2)
+            lo, hi = _apply_boundary(lo, hi, ys, _seg_boundary(seg, segs[k + 1]))
         seg_ranges.append((lo, hi))
 
     rows = []
