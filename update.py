@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
 """
 dwg-material-to-xls 版本检查与升级（纯 Python 标准库）。
 
@@ -11,11 +10,7 @@ dwg-material-to-xls 版本检查与升级（纯 Python 标准库）。
 
 版本来源：远端 version.json；副本会备份到 ~/.workbuddy/skill-backups/。
 """
-
 from __future__ import annotations
-
-__author__ = "lonyii"
-__email__ = "lonyii@qq.com"
 
 import argparse
 import json
@@ -29,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from install import (  # noqa: E402
     DEFAULT_REPO, SKILL_NAME, backup, copy_skill, default_skills_dir, download_zip,
     extract_zip, http_get, installed_version, locate_root, log, parse_repo,
-    resolve_branch, target_dir, validate, with_mirror,
+    resolve_branch, reset_checklist_marker, target_dir, validate, with_mirror,
 )
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -127,6 +122,9 @@ def main(argv=None):
         log("\n本次更新内容：")
         for line in changes[:3]:
             log("  - %s" % line)
+    reset_checklist_marker(dst)
+    log("\n提示：本次升级后，请让 AI 展示《交付前自查清单》（出图前逐项核对，"
+        "见 SKILL.md 与 references/燃气工程竣工图材料表编制规范.docx）。")
     return 0
 
 

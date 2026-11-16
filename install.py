@@ -48,6 +48,8 @@ SKILL_NAME = "dwg-material-to-xls"
 DEFAULT_REPO = "https://github.com/lonyii/skills-dwg-material-to-xls"
 FALLBACK_BRANCH = "main"
 REQUIRED_FILES = ("SKILL.md", "scripts/import_materials.py", "scripts/dwg_tables.py")
+# 自查清单推送标记：安装/升级后清除，触发 AI 下次加载技能时把清单推送给用户阅读
+CHECKLIST_MARKER = ".checklist_seen_version"
 EXCLUDE_NAMES = {".git", ".github", "__pycache__", ".backup", ".backups",
                  ".idea", ".vscode", "skill-backups"}
 IGNORE_PATTERNS = shutil.ignore_patterns(
@@ -228,6 +230,23 @@ def post_install(dst: Path):
     log("安装完成！在 AI 对话里直接说：")
     log('  「把这些 dwg 的材料表导出，生成材料平差表」并附上若干图纸即可')
     log("若 WorkBuddy 已打开，刷新/重启一次以加载新技能。")
+    reset_checklist_marker(dst)
+    log("提示：首次使用请让 AI 展示《交付前自查清单》（出图前逐项核对，"
+        "见 SKILL.md 与 references/燃气工程竣工图材料表编制规范.docx）。")
+
+
+def reset_checklist_marker(dst: Path):
+    """清除自查清单推送标记，使 AI 下次加载技能时重新推送给用户阅读。
+
+    标记文件不在仓库内（copy_skill 不会覆盖它），只存在于用户安装目录；
+    删除后 AI 读 SKILL.md 顶部的「AI 必读」区块即可判定需要推送。
+    """
+    try:
+        marker = dst / CHECKLIST_MARKER
+        if marker.exists():
+            marker.unlink()
+    except OSError:
+        pass
 
 
 def main(argv=None):
