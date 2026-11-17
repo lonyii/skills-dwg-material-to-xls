@@ -38,6 +38,7 @@ import argparse
 import difflib
 import json
 import os
+import re
 import shutil
 import sys
 
@@ -81,8 +82,33 @@ def resolve_template(value):
 # --------------------------------------------------------------------------- #
 # 匹配
 # --------------------------------------------------------------------------- #
-def _find_cand(pool, used, key, group, mode):
-    """group：严格同分组；global：忽略分组；hybrid：先同组再全局。"""
+def _match_fp(desc):
+    """匹配指纹：抹平同一物料的防腐工艺/标准号写法差异，保留规格主体。
+
+    实测 NC26I013：竣工写「20#钢无缝管_D273*8_GB/T8163-2018」，施工图写
+    「20#钢无缝管_D273*8_双层熔结环氧粉末防腐」，规格相同仅防腐/标准号写法不同，
+    精确匹配失败被误判为施工图独有、施工数量丢失。这里把这些等价写法去掉，
+    两边指纹一致即可匹配；规格（管径/壁厚/mm 等）完全不动，不会串料。
+    """
+    # 图签人名常换行追加在描述末尾（实测「...防腐\n张三峰\n李 颖」），
+    # 指纹只取第一行物料本身，避免同名项因噪声匹配不上。
+    # 注意：必须先按原始 desc 截断换行再 norm_desc——norm_desc 会把 \n 直接删掉，
+    # 之后再 split 已无法分离人名。
+    x = norm_desc(str(desc).split("\n")[0].split("\\P")[0])
+    for p in (r"GB/T\d+-\d+", r"GB\d+-\d+", r"SY/T\d+-\d+",
+              r"双层熔结环氧粉末防腐", r"3PE防腐", r"熔结环氧粉末防腐",
+              r"单层环氧粉末防腐", r"环氧粉末防腐", r"加强级防腐",
+              r"普通级防腐", r"三层PE防腐"):
+        x = re.sub(p, "", x, flags=re.I)
+    x = re.sub(r"_+", "_", x).strip("_")
+    return x
+
+
+def _find_cand(pool, used, key, group, mode, desc=None):
+    """group：严格同分组；global：忽略分组；hybrid：先同组再全局。
+
+    desc 给定时，精确匹配失败后再用「匹配指纹」找一次（防腐/标准号写法差异）。
+    """
     if mode in ("group", "hybrid"):
         for i, d in enumerate(pool):
             if i in used or d["is_header"]:
@@ -94,6 +120,17 @@ def _find_cand(pool, used, key, group, mode):
             if i in used or d["is_header"]:
                 continue
             if norm_desc(d["desc"]) == key:
+                return i
+    # 指纹回退：仅当调用方传入原始描述、且精确匹配全部失败时启用。
+    # 作用有二：①防腐/标准号写法差异（fp!=key）；②描述相同但两侧分组标注
+    # 不同（实测 NC26I013 保护沟：施工图归入「不入系统材料」组、竣工无分组，
+    # 严格同组匹配失败）。两种情况都按描述指纹再找一次。
+    if desc is not None:
+        fp = _match_fp(desc)
+        for i, d in enumerate(pool):
+            if i in used or d["is_header"]:
+                continue
+            if _match_fp(d["desc"]) == fp:
                 return i
     return None
 
@@ -124,7 +161,8 @@ def match_rows(asbuilt, design, mode="group"):
                 "is_header": True, "group": a["group"], "matched": None,
             })
             continue
-        cand = _find_cand(design, used, key, norm_desc(a["group"]), mode)
+        cand = _find_cand(design, used, key, norm_desc(a["group"]), mode,
+                          desc=a["desc"])
         if cand is not None:
             used.add(cand)
             d = design[cand]
