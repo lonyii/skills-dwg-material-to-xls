@@ -436,8 +436,25 @@ def detect_tables(ents):
             continue
         # 同一水平线可并排放多张表：每个表头列取距离本「序号」最近的那个，
         # 避免把隔壁表的列锚点错配过来。
-        near = [e for e in ents
-                if abs(e["y"] - c["y"]) <= 320 and -1000 <= e["x"] - c["x"] <= 22000]
+        #
+        # 搜索半径不能写死：实测 NC26I013（恒茂国际都会）序号→单位达 50634，
+        # 约参考图框 10126 的 5 倍，写死的 22000 会把「物料描述/单位/数量」
+        # 锚点全排除，导致标准表头识别失败、退回 headerless、有效行 0。
+        # 做法：先按本「序号」到最近「单位/数量」实测列距估一个局部比例，
+        # 再按比例放大搜索窗口（至少保留原 22000）。列距正常的图纸估值≈1，
+        # 窗口与旧版一致，行为完全不变。
+        c_near = [e for e in ents if abs(e["y"] - c["y"]) <= 320
+                  and -1000 <= e["x"] - c["x"] <= 300000]
+        span = 22000
+        unit_e = [e for e in c_near if norm_header(e["t"]) == "单位"]
+        qty_e = [e for e in c_near if norm_header(e["t"]) == "数量"]
+        ref = (unit_e or qty_e)
+        if ref:
+            gap = min(e["x"] - c["x"] for e in ref if e["x"] > c["x"]) if any(
+                e["x"] > c["x"] for e in ref) else 0
+            if gap > 0:
+                span = max(22000, int(gap * 2.2))
+        near = [e for e in c_near if e["x"] - c["x"] <= span]
         anchors = {}
         for key in HEADER_KEYS:
             matches = [e for e in near if norm_header(e["t"]) == key]

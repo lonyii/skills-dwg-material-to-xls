@@ -579,7 +579,12 @@ def main(argv=None):
         projects = sorted({t["project"] for t in i["tables"] if t.get("project")})
         # 「多工程」判定放宽：图内含多个工程名即为候选，随后用
         # 「能匹配到几张不同的竣工图」在分组后最终确认（见下方 multi_targets）。
-        multi_design[id(i)] = len(projects) > 1
+        # 编号唯一可靠：即使工程名完全相同（实测 NC26E373 与 NC26E370 同为
+        # 「时代江湾商务中心商业预留燃气工程」，仅项目编号不同），并排表带
+        # 不同「项目编号」也必须视为多工程图，否则会把另一工程的材料整段
+        # 当成施工独有项串入本工程成品。
+        nos0 = {t.get("no", "").upper() for t in i["tables"] if t.get("no")}
+        multi_design[id(i)] = len(projects) > 1 or len(nos0) > 1
     # 分组时排除多工程施工图，避免它被当成单工程图只服务某一个组。
     # 但最终是否启用多工程筛选，还要看它能否匹配到 ≥2 张不同的竣工图：
     # 只有 1 个匹配目标时说明是单工程图（图内工程名写法不一），走原流程。
