@@ -593,6 +593,51 @@ def detect_tables(ents):
                        + 0.1 * abs(u["anchors"]["序号"] - t["anchors"]["序号"]))
             t["stage"] = best["stage"]
             t["stage_inherited"] = True
+    # 重复表去重：同一张材料表在设计时被复制成两份（整体平移、内容逐格相同），
+    # 若都提取会让竣工/施工材料翻倍（实测 NC26I026 广场东路恒茂华城：竣工图
+    # 两张表各 13 行、描述/单位/数量完全一致，仅 x 整体偏移 23493、y 差 4000）。
+    # 判据刻意严格，避免误删真正的多页/多工程表：
+    #   1) 两表有效行逐格一致（seq/描述/单位/数量），行数相同且 >= 2；
+    #   2) 各列锚点相对「序号」的偏移逐列一致（证明是平移复制，而非两栏独立表）；
+    #   3) 同阶段、同 layout、比例接近；
+    # 满足时保留图签信息更全的那张（有工程编号/表名/非继承阶段优先）。
+    if len(tables) >= 2:
+        def _sig(t):
+            return [(r.get("seq"), str(r.get("desc", "")).strip(),
+                     str(r.get("unit", "")).strip(), r.get("qty"))
+                    for r in parse_table(ents, t) if r.get("desc")]
+        def _anch_rel(t):
+            sx = t["anchors"]["序号"]
+            return {k: round((v - sx) / max(t["scale"], 0.01))
+                    for k, v in t["anchors"].items()}
+        def _richness(t):
+            return (1 if t.get("no") else 0) + (1 if t.get("title") else 0) + \
+                   (1 if not t.get("stage_inherited") else 0) + \
+                   (1 if t.get("project") else 0)
+        kept = []
+        for t in tables:
+            dup_of = None
+            ts, ar = _sig(t), _anch_rel(t)
+            for u in kept:
+                if len(ts) < 2 or ts != _sig(u):
+                    continue
+                if t.get("stage") != u.get("stage") or \
+                   t.get("layout") != u.get("layout") or \
+                   abs(t["scale"] - u["scale"]) > 0.15 * max(t["scale"], u["scale"]):
+                    continue
+                if ar != _anch_rel(u):
+                    continue
+                dup_of = u
+                break
+            if dup_of is None:
+                kept.append(t)
+            elif _richness(t) > _richness(dup_of):
+                kept[kept.index(dup_of)] = t
+        # 重新编号并修正 _seq_entities 依赖的 id
+        for idx, t in enumerate(kept, 1):
+            t["id"] = idx
+        tables = kept
+
     # 回退：标准表头（序号/单位/数量）一张都没识别到时，尝试无表头横向材料表。
     # 部分设计单位（实测 NC26E213 施工图）的材料表不画表头文字，只有数据行：
     # 标准号 | 名称 | 规格 | 材料 | 单位 | 数量，且左右两栏并排、序号只在左栏。
