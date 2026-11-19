@@ -592,19 +592,29 @@ def detect_tables(ents):
 
     # 同一图框左右并排的多页表，常只有一页带图签阶段文字：
     # 让 y 接近、x 相邻的「未标注」表继承最近已标注表，避免漏掉整页材料。
-    for t in tables:
-        if t["stage"] != "未标注":
-            continue
-        w = t["anchors"]["单位"] - t["anchors"]["序号"]
-        cands = [u for u in tables
-                 if u["stage"] != "未标注" and u["id"] != t["id"]
-                 and abs(u["header_y"] - t["header_y"]) < 2.5 * w
-                 and 0 < abs(u["anchors"]["序号"] - t["anchors"]["序号"]) < 4 * w]
-        if cands:
-            best = min(cands, key=lambda u: abs(u["header_y"] - t["header_y"])
-                       + 0.1 * abs(u["anchors"]["序号"] - t["anchors"]["序号"]))
-            t["stage"] = best["stage"]
-            t["stage_inherited"] = True
+    # 多轮传播：并排多页时图签往往只写在其中一页，可能位于最右/最左；
+    # 单轮按 id 顺序处理会让「左侧未标注页」在右侧页尚未获得阶段时找不到候选
+    # （实测 NC25E096 竣工图 4 并排表：表1 在最右带「竣工图」、表2 最左与表1
+    # 的 x 差超出 4w，单轮下表2 漏继承、整页 31 行材料被当「未标注」排除）。
+    # 每轮把能继承的都继承，直到一轮内无新增，阶段沿相邻关系扩散到全部页。
+    for _ in range(len(tables)):
+        changed = False
+        for t in tables:
+            if t["stage"] != "未标注":
+                continue
+            w = t["anchors"]["单位"] - t["anchors"]["序号"]
+            cands = [u for u in tables
+                     if u["stage"] != "未标注" and u["id"] != t["id"]
+                     and abs(u["header_y"] - t["header_y"]) < 2.5 * w
+                     and 0 < abs(u["anchors"]["序号"] - t["anchors"]["序号"]) < 4 * w]
+            if cands:
+                best = min(cands, key=lambda u: abs(u["header_y"] - t["header_y"])
+                           + 0.1 * abs(u["anchors"]["序号"] - t["anchors"]["序号"]))
+                t["stage"] = best["stage"]
+                t["stage_inherited"] = True
+                changed = True
+        if not changed:
+            break
     # 重复表去重：同一张材料表在设计时被复制成两份（整体平移、内容逐格相同），
     # 若都提取会让竣工/施工材料翻倍（实测 NC26I026 广场东路恒茂华城：竣工图
     # 两张表各 13 行、描述/单位/数量完全一致，仅 x 整体偏移 23493、y 差 4000）。
@@ -1397,6 +1407,57 @@ def parse_table(ents, table):
         order = {id(ln): n for n, ln in enumerate(seg_lines)}
         ordered = sorted(made.items(),
                          key=lambda kv: order.get(id(seg_lines[kv[0]]), 0))
+        # 长型号串被拆成两行、各自带序号时合并（实测 NC25E096 竣工图调压柜）：
+        # 图纸把「标准区域调压柜_0.2-0.4MPa_…_不带流量」写成序号3、把续文
+        # 「计接口_不锈钢箱体（出口设定压力：20KPa）」另编序号4，且只有第4行
+        # 有单位/数量。若按两个锚点输出，前者描述被截断、数量空，后者描述
+        # 从半截开始，二者都无法与施工图完整描述匹配。
+        # 判据刻意严格以免误并独立物料（实测 NC26B009 的「U型压力计」曾误并入
+        # 上一行）：①前行无单位无数量且是含下划线的长型号串；②后行紧邻、
+        # 序号恰好+1、有单位有数量；③后行描述以连接符 `_` 开头，或前行末尾
+        # 与后行开头拼接后不产生重复/断裂（前行以截断词「不带流量」结尾、
+        # 后行以「计接口」开头）；④后行不是常见独立物料开头。
+        def _continuation(prev, nxt):
+            p = str(prev.get("desc", "")).rstrip()
+            n = str(nxt.get("desc", "")).strip()
+            if not p or not n:
+                return False
+            # 前行以「_」结尾（下划线未闭合，明确是半个型号串）时，续行几乎
+            # 必为补全；否则要求续行以连接符「_」或截断补全词开头。
+            p_end_underscore = p.endswith("_")
+            if not p_end_underscore and not n.startswith("_"):
+                for cut, join in (("不带流量", "计接口"), ("不带", "")):
+                    if p.endswith(cut) and (not join or n.startswith(join)):
+                        return True
+                return False
+            return True
+
+        merged = []
+        k = 0
+        while k < len(ordered):
+            i, r = ordered[k]
+            if (k + 1 < len(ordered) and r.get("seq") is not None
+                    and not r.get("unit") and r.get("qty") is None
+                    and not r.get("is_header")
+                    and len(str(r.get("desc", ""))) >= 20
+                    and "_" in str(r.get("desc", ""))):
+                j, nx = ordered[k + 1]
+                if (nx.get("seq") == r["seq"] + 1
+                        and nx.get("unit") and nx.get("qty") is not None
+                        and not nx.get("is_header")
+                        and abs(nx["_y"] - r["_y"]) <= 1.6 * (pitch or 800.0 * sc)
+                        and _continuation(r, nx)
+                        and not nx.get("desc", "").startswith(
+                            ("DN", "PE", "20#", "U型"))):
+                    r["desc"] = str(r["desc"]).rstrip() + str(nx["desc"]).strip()
+                    r["unit"] = nx["unit"]
+                    r["qty"] = nx["qty"]
+                    k += 2
+                    merged.append((i, r))
+                    continue
+            merged.append((i, r))
+            k += 1
+        ordered = merged
         for _, r in ordered:
             r.pop("_y", None)
             rows.append(r)
