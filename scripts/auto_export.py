@@ -31,6 +31,7 @@ __email__ = "lonyii@qq.com"
 
 import argparse
 import difflib
+import hashlib
 import json
 import os
 import re
@@ -255,6 +256,13 @@ def classify_stage(path, ents, tables):
         return "design"
     if any(t["stage"] == "竣工图" for t in tables):
         return "asbuilt"
+    # 所有材料表都明确标为「施工图」时，不再用零散文字里的「竣工图」推翻。
+    # 施工图常印「详见竣工图：NCxx」「已建管详见竣工图」等引用说明，
+    # 旧版只要 words 里出现「竣工图」就判 asbuilt，会把纯施工图误当竣工图
+    # （实测 NC25E096-室内：7 张表全是施工图，却被判竣工图并入竣工数据，
+    # 竣工行数 155→325、施工图量被当成等于竣工量）。表自身图签更可靠。
+    if tables and all(t["stage"] == "施工图" for t in tables):
+        return "design"
     words = {clean_text(e["t"]).strip() for e in ents}
     if "竣工图" in words:
         return "asbuilt"
@@ -376,6 +384,31 @@ def _name_of(group, no):
         if i["name"]:
             return i["name"]
     return no or "未命名工程"
+
+
+def _dedupe_design_infos(infos):
+    """同一工程提供多份内容相同的施工图时只保留一份，避免材料翻倍。
+
+    实测 NC25E096 同时提供「NC25E096-室内.dwg」与「审+（室内）.dwg」，两者
+    材料表逐行完全相同（非材料实体不同），旧版两份都并入，施工图 170→336 行、
+    成品出现大量重复项。用材料表「阶段+表名+描述+单位+数量」签名去重，
+    内容不同的版本（真有改动）仍全部保留。
+    """
+    seen, kept = set(), []
+    for i in infos:
+        sig_parts = []
+        for t in i.get("tables", []):
+            for r in parse_table(i["ents"], t):
+                sig_parts.append("|".join(str(x) for x in (
+                    r.get("seq"), r.get("desc"), r.get("unit"), r.get("qty"))))
+        sig = hashlib.md5("\n".join(sig_parts).encode("utf-8")).hexdigest()
+        if sig in seen:
+            print("  [去重施工图] %s：材料表与已收录图纸完全相同，跳过"
+                  % os.path.basename(i.get("path", "")))
+            continue
+        seen.add(sig)
+        kept.append(i)
+    return kept
 
 
 def _core_name(s):
@@ -628,6 +661,9 @@ def main(argv=None):
         ab = [i for i in group if i["stage"] == "asbuilt"]
         sg = [i for i in group if i["stage"] == "design"]
         cur_name = _name_of(group, "" if (not no or no.startswith("_")) else no)
+        # 同一工程提供多份内容相同的施工图（如工程编号版 + 审图版）时去重，
+        # 否则同一批材料被并入两次、成品行数翻倍（实测 NC25E096）。
+        sg = _dedupe_design_infos(sg)
         # 竣工图为基准：把多工程施工图也纳入本组的候选数据源，
         # 由 rows_of 按本组工程名筛选其中属于本工程的表。
         if ab:
@@ -635,6 +671,7 @@ def main(argv=None):
             for i in all_design:
                 if multi_design.get(id(i)) and i not in sg:
                     sg = sg + [i]
+            sg = _dedupe_design_infos(sg)
         if not ab:
             print("  [跳过] %s：未找到竣工图，无法生成材料平差表" % (no or "(未编号)"))
             continue

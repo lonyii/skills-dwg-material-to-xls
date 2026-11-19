@@ -1436,22 +1436,28 @@ def parse_table(ents, table):
         k = 0
         while k < len(ordered):
             i, r = ordered[k]
+            r_has = bool(r.get("unit")) or r.get("qty") is not None
             if (k + 1 < len(ordered) and r.get("seq") is not None
-                    and not r.get("unit") and r.get("qty") is None
                     and not r.get("is_header")
                     and len(str(r.get("desc", ""))) >= 20
                     and "_" in str(r.get("desc", ""))):
                 j, nx = ordered[k + 1]
+                nx_has = bool(nx.get("unit")) or nx.get("qty") is not None
+                # 两行中「恰好一行」有单位数量：另一行是被拆开的续文/前缀。
+                # 竣工图是前行无单位数量、后行有；施工图是前行有、后行无
+                # （单位数量 y 落在两行之间被归给前行）。两种都要合并。
+                xor_qty = r_has != nx_has
                 if (nx.get("seq") == r["seq"] + 1
-                        and nx.get("unit") and nx.get("qty") is not None
                         and not nx.get("is_header")
+                        and xor_qty
                         and abs(nx["_y"] - r["_y"]) <= 1.6 * (pitch or 800.0 * sc)
                         and _continuation(r, nx)
                         and not nx.get("desc", "").startswith(
                             ("DN", "PE", "20#", "U型"))):
                     r["desc"] = str(r["desc"]).rstrip() + str(nx["desc"]).strip()
-                    r["unit"] = nx["unit"]
-                    r["qty"] = nx["qty"]
+                    if not r_has:       # 单位数量只在后行时沿用后行
+                        r["unit"] = nx["unit"]
+                        r["qty"] = nx["qty"]
                     k += 2
                     merged.append((i, r))
                     continue
