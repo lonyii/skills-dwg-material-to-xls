@@ -560,10 +560,18 @@ def detect_tables(ents):
 
     # 同一图框并排的多栏表，工程名常只写在其中一栏的表头附近：
     # 让 y 接近、x 相邻的「未标注工程」表继承相邻表的工程名。
+    # 关键修复（NC25E096 混入 NC24H337 表）：若两表都识别到了「项目编号」且编号
+    # 不同，则它们是不同工程，绝不能继承工程名——否则会像本例那样把 NC24H337 的
+    # 外管配合表工程名串成 NC25E096，导致后续按工程名选表时无法剔除。
+    def _no_conflict(t, u):
+        nt, nu = t.get("no"), u.get("no")
+        return bool(nt) and bool(nu) and nt.upper() != nu.upper()
+
     for t in tables:
         if t.get("project"):
             continue
         near = [u for u in tables if u.get("project") and u["id"] != t["id"]
+                and not _no_conflict(t, u)
                 and abs(u["header_y"] - t["header_y"]) <= 8000 * t["scale"]
                 and abs(u["anchors"]["序号"] - t["anchors"]["序号"]) <= 20000 * t["scale"]]
         if near:
@@ -573,7 +581,11 @@ def detect_tables(ents):
 
     # 多工程图：给每张表打标，parse_table 据此只保留「首行序号紧贴本表表头」的段，
     # 避免序号跨越到相邻工程的表格。单工程图不打标，保持原有跨页长表行为。
-    multi_project = len({t["project"] for t in tables if t.get("project")}) > 1
+    # 编号比工程名可靠：一张图两个工程名可能只差「外管配合」等字样甚至被继承串味，
+    # 但「项目编号」唯一。任一维度（编号/工程名）出现多于一种即视为多工程图。
+    nos = {t["no"].upper() for t in tables if t.get("no")}
+    projs = {t["project"] for t in tables if t.get("project")}
+    multi_project = len(nos) > 1 or len(projs) > 1
     if multi_project:
         for t in tables:
             t["multi_project"] = True
@@ -1403,9 +1415,20 @@ def assign_groups(rows):
     return rows
 
 
-def extract_rows(drawing, from_json=None, cache=None, stage="auto", tables=None):
+def extract_rows(drawing, from_json=None, cache=None, stage="auto", tables=None,
+                 project_no=None):
     ents, meta = load_entities(drawing, from_json=from_json, cache=cache)
     detected = detect_tables(ents)
+    # 一张 DWG 混放多个工程时，按项目编号精确剔除别的工程的表（实测 NC25E096
+    # 施工图含 NC24H337 外管配合表）。编号唯一可靠，优先于工程名。
+    if project_no:
+        want = project_no.strip().upper()
+        numbered = [t for t in detected if t.get("no")]
+        if numbered:
+            # 只保留编号等于目标的表；无编号的表保留（老图纸图签可能没写编号），
+            # 交由后续工程名/阶段筛选处理。这样既不混入别工程，也不误删本工程表。
+            detected = [t for t in detected
+                        if not t.get("no") or t["no"].upper() == want]
     chosen = [t for t in detected if t["id"] in tables] if tables else \
              [t for t in detected if stage == "auto" or t["stage"] == stage]
     if not chosen and tables is None and stage != "auto":
@@ -1444,6 +1467,8 @@ def main(argv=None):
     p.add_argument("--cache", help="把实体缓存写入该 JSON 文件")
     p.add_argument("--stage", default="auto", choices=("auto", "竣工图", "施工图"))
     p.add_argument("--tables", help="手动指定表编号，逗号分隔，如 1,2（配合 inspect 使用）")
+    p.add_argument("--project-no", dest="project_no",
+                   help="按图签「项目编号」过滤表，只提取该工程的表（一张 DWG 混放多工程时用，如 NC25E096）")
     p.add_argument("--out", help="extract 结果 JSON 输出路径（不指定则打印到 stdout）")
     args = p.parse_args(argv)
 
@@ -1456,16 +1481,21 @@ def main(argv=None):
         for t in tables:
             rows = parse_table(ents, t)
             filled = [r for r in rows if r["desc"]]
-            print("  #%d  [%s%s]  %s | 工程=%s  表头y=%.0f  序号列x=%.0f  比例=%.2f  有效行=%d  首行=%s" % (
+            print("  #%d  [%s%s]  编号=%s  工程=%s  %s | 表头y=%.0f  序号列x=%.0f  比例=%.2f  有效行=%d  首行=%s" % (
                 t["id"], t["stage"], "(继承)" if t.get("stage_inherited") else "",
-                t["title"] or "(未取到表名)", t.get("project") or "(未标注)", t["header_y"],
+                t.get("no") or "(无)", t.get("project") or "(未标注)",
+                t["title"] or "(未取到表名)", t["header_y"],
                 t["anchors"]["序号"], t.get("scale", 1.0), len(filled),
                 repr(filled[0]["desc"])[:46] if filled else "-"))
-        print("\n提示：用 --tables 指定要提取的表；extract 输出 JSON 供导入脚本使用。")
+        nos = {t["no"] for t in tables if t.get("no")}
+        if len(nos) > 1:
+            print("\n⚠ 检测到多个项目编号：%s —— 请用 --project-no <编号> 只提取目标工程的表，"
+                  "避免混入其它工程。" % ", ".join(sorted(nos)))
+        print("\n提示：用 --tables 指定表号，或用 --project-no 按工程编号过滤；extract 输出 JSON 供导入脚本使用。")
         return 0
 
     result = extract_rows(args.drawing, from_json=args.from_json, cache=args.cache,
-                          stage=args.stage, tables=ids)
+                          stage=args.stage, tables=ids, project_no=args.project_no)
     payload = json.dumps(result, ensure_ascii=False, indent=1)
     if args.out:
         with open(args.out, "w", encoding="utf-8") as f:
