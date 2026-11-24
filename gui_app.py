@@ -57,7 +57,7 @@ import_materials.TEMPLATE_ALIASES["sample"] = TEMPLATE_XLS
 
 
 VALID_EXT = (".dwg", ".dxf")
-APP_VERSION = "2.5.18"
+APP_VERSION = "2.5.19"
 
 # 局域网更新源与本地更新目录（只存放 EXE）。
 LAN_UPDATE_DIR = r"\\Jsztnas\团队文件\内部应用"
@@ -493,9 +493,9 @@ class App:
                 self.status_var.set(item.get("text", ""))
                 continue
 
-            self.adding = False
-            self._set_add_busy(False)
             if action == "error":
+                self.adding = False
+                self._set_add_busy(False)
                 self.append_log("\n[添加失败] %s\n" % item.get("message", ""))
                 messagebox.showerror("错误", "添加图纸失败，请查看运行日志。")
                 return
@@ -504,27 +504,52 @@ class App:
                     self.seen.add(normalize(path))
                     self.signatures.add(sig)
                     self.paths.append({"path": path, "kind": "图纸"})
-                self.refresh_list()
                 added = len(item.get("items", []))
-                duplicates = item.get("duplicates", 0)
-                skipped = item.get("skipped", 0)
-                folder_inputs = item.get("folder_inputs", 0)
-                if duplicates:
-                    self.status_var.set("已自动去重 %d 项（列表共 %d 张图纸）"
-                                        % (duplicates, len(self.paths)))
-                elif added:
-                    self.status_var.set("已添加 %d 张图纸（共 %d 张）" % (added, len(self.paths)))
-                elif folder_inputs and not added:
-                    self.status_var.set("文件夹中未找到 .dwg / .dxf 图纸")
-                else:
-                    self.status_var.set("列表共 %d 张图纸" % len(self.paths))
-                if skipped and not item.get("silent"):
-                    messagebox.showwarning(
-                        "已跳过",
-                        "已忽略 %d 个无效路径（仅支持 .dwg / .dxf 文件或文件夹）。" % skipped)
+                start = len(self.paths) - added
+                self.progress.configure(value=100)
+                self._append_rows(start, len(self.paths),
+                                  lambda: self._finish_add(
+                                      added, item.get("duplicates", 0),
+                                      item.get("skipped", 0),
+                                      item.get("folder_inputs", 0),
+                                      item.get("silent", False)))
             return
         if self.adding:
             self.root.after(80, self._poll_add)
+
+    def _append_rows(self, index: int, total: int, finish):
+        """分批写入 Treeview，避免一次性插入大量行造成短暂无响应。"""
+        chunk = 80
+        end = min(index + chunk, total)
+        for i in range(index, end):
+            item = self.paths[i]
+            no = i + 1
+            self.tree.insert(
+                "", "end",
+                values=(no, os.path.basename(item["path"]), item["kind"], item["path"]),
+                tags=("odd" if no % 2 else "even",),
+            )
+        if end < total:
+            self.status_var.set("正在写入列表 %d/%d…" % (end, total))
+            self.root.after(10, lambda: self._append_rows(end, total, finish))
+        else:
+            finish()
+
+    def _finish_add(self, added, duplicates, skipped, folder_inputs, silent):
+        self.adding = False
+        self._set_add_busy(False)
+        if duplicates:
+            self.status_var.set("已自动去重 %d 项（列表共 %d 张图纸）"
+                                % (duplicates, len(self.paths)))
+        elif added:
+            self.status_var.set("已添加 %d 张图纸（共 %d 张）" % (added, len(self.paths)))
+        elif folder_inputs and not added:
+            self.status_var.set("文件夹中未找到 .dwg / .dxf 图纸")
+        else:
+            self.status_var.set("列表共 %d 张图纸" % len(self.paths))
+        if skipped and not silent:
+            messagebox.showwarning(
+                "已跳过", "已忽略 %d 个无效路径（仅支持 .dwg / .dxf 文件或文件夹）。" % skipped)
 
     def add_files_dialog(self):
         files = filedialog.askopenfilenames(
