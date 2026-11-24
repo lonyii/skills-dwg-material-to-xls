@@ -7,7 +7,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import os
 import queue
 import re
@@ -58,7 +57,7 @@ import_materials.TEMPLATE_ALIASES["sample"] = TEMPLATE_XLS
 
 
 VALID_EXT = (".dwg", ".dxf")
-APP_VERSION = "2.5.17"
+APP_VERSION = "2.5.18"
 
 # 局域网更新源与本地更新目录（只存放 EXE）。
 LAN_UPDATE_DIR = r"\\Jsztnas\团队文件\内部应用"
@@ -101,13 +100,10 @@ def is_within(child: str, parent: str) -> bool:
         return False
 
 
-def file_hash(path: str) -> str:
-    """按内容计算 SHA256，用于跨文件夹识别重复图纸。"""
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
+def file_signature(path: str) -> tuple:
+    """按文件大小 + 修改时间生成去重签名，避免读取整个 DWG。"""
+    st = os.stat(path)
+    return (st.st_size, st.st_mtime_ns)
 
 
 def drawings_in_folder(folder: str) -> list:
@@ -200,12 +196,14 @@ class App:
 
         self.paths = []            # [{"path": str, "kind": "图纸"}]
         self.seen = set()          # 规范化路径
-        self.hashes = set()        # 图纸内容 SHA256，用于跨文件夹去重
+        self.signatures = set()    # (大小, 修改时间)，用于跨文件夹去重
         self.running = False
         self.updating = False
+        self.adding = False
         self.output_dir = ""
         self.q = queue.Queue()
         self.update_q = queue.Queue()
+        self.add_q = queue.Queue()
 
         self._build_style()
         self._build_ui()
@@ -271,33 +269,29 @@ class App:
         )
         ttk.Label(
             head,
-            text="拖入 DWG / DXF 文件或文件夹，自动生成材料平差表（内置加强比对版模板）",
+            text="拖入 DWG / DXF 文件或文件夹，自动生成材料平差表（文件夹自动展开 · 大小+时间去重 · 内置模板）",
             style="Sub.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(4, 0))
 
         # 工具栏
         tools = ttk.Frame(root, style="Card.TFrame", padding=10)
         tools.grid(row=1, column=0, sticky="ew", pady=(0, 10))
-        for i in range(8):
-            tools.columnconfigure(i, weight=0)
-        tools.columnconfigure(6, weight=1)
+        left = ttk.Frame(tools, style="Card.TFrame")
+        right = ttk.Frame(tools, style="Card.TFrame")
+        left.pack(side="left", fill="x")
+        right.pack(side="right", fill="x")
 
-        self.btn_add_file = ttk.Button(tools, text="添加文件", command=self.add_files_dialog)
-        self.btn_add_dir = ttk.Button(tools, text="添加文件夹", command=self.add_folder_dialog)
-        self.btn_delete = ttk.Button(tools, text="删除选中", command=self.delete_selected)
-        self.btn_clear = ttk.Button(tools, text="清空", command=self.clear_all)
-        self.btn_update = ttk.Button(tools, text="检查更新", command=self.lan_update)
-        self.btn_start = ttk.Button(tools, text="开始生成", style="Accent.TButton", command=self.start)
+        self.btn_add_file = ttk.Button(left, text="添加文件", command=self.add_files_dialog)
+        self.btn_add_dir = ttk.Button(left, text="添加文件夹", command=self.add_folder_dialog)
+        self.btn_delete = ttk.Button(left, text="删除选中", command=self.delete_selected)
+        self.btn_clear = ttk.Button(left, text="清空", command=self.clear_all)
+        self.btn_update = ttk.Button(left, text="检查更新", command=self.lan_update)
+        self.btn_start = ttk.Button(right, text="开始生成", style="Accent.TButton", command=self.start)
 
-        self.btn_add_file.grid(row=0, column=0, padx=(0, 8))
-        self.btn_add_dir.grid(row=0, column=1, padx=(0, 8))
-        self.btn_delete.grid(row=0, column=2, padx=(0, 8))
-        self.btn_clear.grid(row=0, column=3, padx=(0, 8))
-        self.btn_update.grid(row=0, column=4, padx=(0, 8))
-        ttk.Label(tools, text="文件夹自动展开 · 内容去重 · 可拖入 · Ctrl+V 粘贴", style="Card.TLabel").grid(
-            row=0, column=5, sticky="w", padx=(8, 0)
-        )
-        self.btn_start.grid(row=0, column=7, sticky="e")
+        for btn in (self.btn_add_file, self.btn_add_dir, self.btn_delete,
+                    self.btn_clear, self.btn_update):
+            btn.pack(side="left", padx=(0, 8))
+        self.btn_start.pack(side="right", padx=(8, 0))
 
         # 文件列表
         list_card = ttk.Frame(root, style="Card.TFrame", padding=1)
@@ -404,58 +398,133 @@ class App:
             )
         self.status_var.set("已添加 %d 项" % len(self.paths))
 
-    def add_paths(self, paths, silent=False):
-        """添加图纸/文件夹并自动去重：按路径 + 内容 SHA256 跨文件夹去重。"""
-        added = 0
-        skipped = 0
-        duplicates = 0
-        folder_inputs = 0
-        candidates = []
-        for raw in paths or []:
-            path = os.path.abspath(str(raw).strip().strip('"'))
-            if not os.path.exists(path):
-                skipped += 1
-                continue
-            if os.path.isdir(path):
-                folder_inputs += 1
-                candidates.extend(drawings_in_folder(path))
-            elif path.lower().endswith(VALID_EXT):
-                candidates.append(path)
+    def _set_add_busy(self, busy: bool):
+        state = "disabled" if busy else "normal"
+        for btn in (self.btn_add_file, self.btn_add_dir, self.btn_delete,
+                    self.btn_clear, self.btn_update, self.btn_start):
+            if busy:
+                btn.configure(state="disabled")
             else:
-                skipped += 1
-                continue
+                btn.configure(state="normal")
 
-        for path in candidates:
-            key = normalize(path)
-            if key in self.seen:
-                duplicates += 1
-                continue
+    def add_paths(self, paths, silent=False):
+        """后台扫描并去重，避免粘贴大量文件/文件夹时卡死界面。"""
+        paths = list(paths or [])
+        if self.adding:
+            return 0
+        if self.running or self.updating:
+            if not silent:
+                messagebox.showinfo("提示", "正在处理其它任务，请稍后再添加。")
+            return 0
+        if not paths:
+            return 0
+        self.adding = True
+        self._set_add_busy(True)
+        self.progress.configure(value=0)
+        self.status_var.set("正在扫描图纸并检查重复项…")
+        self.add_q = queue.Queue()
+        threading.Thread(target=self._add_worker, args=(paths, silent), daemon=True).start()
+        self.root.after(80, self._poll_add)
+        return 0
+
+    def _add_worker(self, paths, silent):
+        def post(action, **kw):
+            self.add_q.put(dict(action=action, **kw))
+        try:
+            post("progress", value=5)
+            candidates = []
+            skipped = 0
+            folder_inputs = 0
+            for raw in paths:
+                path = os.path.abspath(str(raw).strip().strip('"'))
+                if not os.path.exists(path):
+                    skipped += 1
+                    continue
+                if os.path.isdir(path):
+                    folder_inputs += 1
+                    candidates.extend(drawings_in_folder(path))
+                elif path.lower().endswith(VALID_EXT):
+                    candidates.append(path)
+                else:
+                    skipped += 1
+
+            post("progress", value=20)
+            total = max(len(candidates), 1)
+            seen = set(self.seen)
+            signatures = set(self.signatures)
+            new_items = []
+            duplicates = 0
+            for i, path in enumerate(candidates, 1):
+                key = normalize(path)
+                if key in seen:
+                    duplicates += 1
+                else:
+                    try:
+                        sig = file_signature(path)
+                    except OSError:
+                        skipped += 1
+                        continue
+                    if sig in signatures:
+                        duplicates += 1
+                    else:
+                        seen.add(key)
+                        signatures.add(sig)
+                        new_items.append((path, sig))
+                if i % 5 == 0 or i == total:
+                    post("status", text="正在检查重复项 %d/%d…" % (i, total))
+                    post("progress", value=20 + int(75 * i / total))
+            post("progress", value=100)
+            post("done", items=new_items, duplicates=duplicates,
+                 skipped=skipped, folder_inputs=folder_inputs, silent=silent)
+        except Exception:
+            post("error", message=traceback.format_exc())
+
+    def _poll_add(self):
+        while True:
             try:
-                digest = file_hash(path)
-            except OSError:
-                skipped += 1
+                item = self.add_q.get_nowait()
+            except queue.Empty:
+                break
+            action = item.get("action")
+            if action == "progress":
+                self.progress.configure(value=item.get("value", 0))
                 continue
-            if digest in self.hashes:
-                duplicates += 1
+            if action == "status":
+                self.status_var.set(item.get("text", ""))
                 continue
-            self.seen.add(key)
-            self.hashes.add(digest)
-            self.paths.append({"path": path, "kind": "图纸"})
-            added += 1
 
-        self.refresh_list()
-        if duplicates:
-            self.status_var.set("已自动去重 %d 项（列表共 %d 张图纸）"
-                                % (duplicates, len(self.paths)))
-        elif added:
-            self.status_var.set("已添加 %d 张图纸（共 %d 张）" % (added, len(self.paths)))
-        elif folder_inputs and not candidates:
-            self.status_var.set("文件夹中未找到 .dwg / .dxf 图纸")
-        if skipped and not silent:
-            messagebox.showwarning(
-                "已跳过", "已忽略 %d 个无效路径（仅支持 .dwg / .dxf 文件或文件夹）。" % skipped
-            )
-        return added
+            self.adding = False
+            self._set_add_busy(False)
+            if action == "error":
+                self.append_log("\n[添加失败] %s\n" % item.get("message", ""))
+                messagebox.showerror("错误", "添加图纸失败，请查看运行日志。")
+                return
+            if action == "done":
+                for path, sig in item.get("items", []):
+                    self.seen.add(normalize(path))
+                    self.signatures.add(sig)
+                    self.paths.append({"path": path, "kind": "图纸"})
+                self.refresh_list()
+                added = len(item.get("items", []))
+                duplicates = item.get("duplicates", 0)
+                skipped = item.get("skipped", 0)
+                folder_inputs = item.get("folder_inputs", 0)
+                if duplicates:
+                    self.status_var.set("已自动去重 %d 项（列表共 %d 张图纸）"
+                                        % (duplicates, len(self.paths)))
+                elif added:
+                    self.status_var.set("已添加 %d 张图纸（共 %d 张）" % (added, len(self.paths)))
+                elif folder_inputs and not added:
+                    self.status_var.set("文件夹中未找到 .dwg / .dxf 图纸")
+                else:
+                    self.status_var.set("列表共 %d 张图纸" % len(self.paths))
+                if skipped and not item.get("silent"):
+                    messagebox.showwarning(
+                        "已跳过",
+                        "已忽略 %d 个无效路径（仅支持 .dwg / .dxf 文件或文件夹）。" % skipped)
+            return
+        if self.adding:
+            self.root.after(80, self._poll_add)
 
     def add_files_dialog(self):
         files = filedialog.askopenfilenames(
@@ -481,7 +550,7 @@ class App:
                 path = self.paths[idx]["path"]
                 self.seen.discard(normalize(path))
                 try:
-                    self.hashes.discard(file_hash(path))
+                    self.signatures.discard(file_signature(path))
                 except OSError:
                     pass
                 del self.paths[idx]
@@ -490,7 +559,7 @@ class App:
     def clear_all(self):
         self.paths.clear()
         self.seen.clear()
-        self.hashes.clear()
+        self.signatures.clear()
         self.refresh_list()
 
     def on_right_click(self, event):
@@ -531,7 +600,7 @@ class App:
 
     def lan_update(self):
         """后台检查更新：先比版本，只有更新才下载，避免界面卡住。"""
-        if self.updating or self.running:
+        if self.updating or self.running or self.adding:
             messagebox.showinfo("检查更新", "正在处理其它任务，请稍后再试。")
             return
         self.updating = True
@@ -654,7 +723,7 @@ class App:
             self.root.after(80, self._poll_update)
 
     def start(self):
-        if self.running or self.updating:
+        if self.running or self.updating or self.adding:
             return
         if not self.paths:
             messagebox.showinfo("提示", "请先添加 DWG / DXF 文件或文件夹。")
