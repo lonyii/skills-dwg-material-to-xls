@@ -59,7 +59,8 @@ import_materials.TEMPLATE_ALIASES["sample"] = TEMPLATE_XLS
 VALID_EXT = (".dwg", ".dxf")
 
 # 局域网更新源与本地更新目录（只存放 EXE）。
-LAN_UPDATE_DIR = r"\\团队文件\内部应用"
+LAN_UPDATE_DIR = r"\\Jsztnas\团队文件\内部应用"
+REMOTE_EXE_FOLDER = "材料平差EXE更新"
 UPDATE_FOLDER = "材料平差EXE更新"
 
 
@@ -456,18 +457,31 @@ class App:
 
     def lan_update(self):
         """从局域网共享目录拉取最新 EXE，保存到专用更新文件夹（只放 EXE）。"""
-        source = os.environ.get("DWG2XLS_LAN_UPDATE_DIR", LAN_UPDATE_DIR)
-        if not os.path.isdir(source):
-            msg = "找不到局域网更新目录：\n%s\n\n请确认共享路径可访问。" % source
+        root = os.environ.get("DWG2XLS_LAN_UPDATE_DIR", LAN_UPDATE_DIR)
+        if not os.path.isdir(root):
+            msg = "找不到局域网更新目录：\n%s\n\n请确认共享路径可访问。" % root
+            self.append_log("\n[更新失败] " + msg + "\n")
+            messagebox.showerror("检查更新", msg)
+            return
+        # 在更新地址下自建专用文件夹，只存放 EXE。
+        source = os.path.join(root, REMOTE_EXE_FOLDER)
+        try:
+            os.makedirs(source, exist_ok=True)
+        except OSError as exc:
+            msg = "无法创建更新文件夹：\n%s\n\n%s" % (source, exc)
             self.append_log("\n[更新失败] " + msg + "\n")
             messagebox.showerror("检查更新", msg)
             return
         exes = [os.path.join(source, n) for n in os.listdir(source)
                 if n.lower().endswith(".exe") and os.path.isfile(os.path.join(source, n))]
         if not exes:
-            msg = "更新目录中没有 EXE 文件：\n%s" % source
-            self.append_log("\n[更新失败] " + msg + "\n")
-            messagebox.showwarning("检查更新", msg)
+            msg = "更新文件夹中暂无 EXE，请将最新版本放入：\n%s" % source
+            self.append_log("\n[更新] " + msg + "\n")
+            messagebox.showinfo("检查更新", msg)
+            try:
+                os.startfile(source)
+            except OSError:
+                pass
             return
         latest = max(exes, key=lambda p: os.path.getmtime(p))
         target_dir = local_update_dir()
