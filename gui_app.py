@@ -57,7 +57,7 @@ import_materials.TEMPLATE_ALIASES["sample"] = TEMPLATE_XLS
 
 
 VALID_EXT = (".dwg", ".dxf")
-APP_VERSION = "2.5.20"
+APP_VERSION = "2.5.21"
 
 # 局域网更新源与本地更新目录（只存放 EXE）。
 LAN_UPDATE_DIR = r"\\Jsztnas\团队文件\内部应用"
@@ -100,10 +100,14 @@ def is_within(child: str, parent: str) -> bool:
         return False
 
 
-def file_signature(path: str) -> tuple:
-    """按文件大小 + 修改时间生成去重签名，避免读取整个 DWG。"""
+def file_keys(path: str) -> frozenset:
+    """生成去重特征：大小+修改时间为主，同名+大小为兜底（不读文件内容）。"""
     st = os.stat(path)
-    return (st.st_size, st.st_mtime_ns)
+    name = os.path.basename(path).lower()
+    return frozenset({
+        ("size_mtime", st.st_size, st.st_mtime_ns),
+        ("name_size", name, st.st_size),
+    })
 
 
 def drawings_in_folder(folder: str) -> list:
@@ -196,7 +200,7 @@ class App:
 
         self.paths = []            # [{"path": str, "kind": "图纸"}]
         self.seen = set()          # 规范化路径
-        self.signatures = set()    # (大小, 修改时间)，用于跨文件夹去重
+        self.signatures = set()    # 大小+时间 / 同名+大小 特征，用于跨文件夹去重
         self.running = False
         self.updating = False
         self.adding = False
@@ -269,7 +273,7 @@ class App:
         )
         ttk.Label(
             head,
-            text="拖入 DWG / DXF 文件或文件夹，自动生成材料平差表（文件夹自动展开 · 大小+时间去重 · 内置模板）",
+            text="拖入 DWG / DXF 文件或文件夹，自动生成材料平差表（文件夹自动展开 · 大小+时间/同名去重 · 内置模板）",
             style="Sub.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(4, 0))
 
@@ -328,6 +332,7 @@ class App:
         self.drag_canvas.pack(fill="both", expand=True)
         self.drag_canvas.bind("<B1-Motion>", self._on_tree_drag)
         self.drag_canvas.bind("<ButtonRelease-1>", self._on_tree_release)
+        self.drag_win.bind("<ButtonRelease-1>", self._on_tree_release)
         self._drag_start = None
         self._drag_active = False
         self._drag_selection = ()
@@ -384,9 +389,19 @@ class App:
 
         self.refresh_list()
 
-    def _on_tree_press(self, event):
-        self._drag_start = (event.x, event.y)
+    def _hide_drag_overlay(self):
+        try:
+            self.drag_canvas.delete("all")
+            self.drag_win.withdraw()
+        except tk.TclError:
+            pass
         self._drag_active = False
+        self._drag_start = None
+
+    def _on_tree_press(self, event):
+        # 任何新的按下都先清掉上一次可能残留的选框
+        self._hide_drag_overlay()
+        self._drag_start = (event.x, event.y)
         self._drag_selection = tuple(self.tree.selection())
 
     def _on_tree_drag(self, event):
@@ -429,13 +444,10 @@ class App:
     def _on_tree_release(self, event):
         if not self._drag_start:
             return
-        if self._drag_active:
-            self.drag_win.withdraw()
-            self.drag_canvas.delete("all")
-            self._drag_active = False
-            self._drag_start = None
+        was_active = self._drag_active
+        self._hide_drag_overlay()
+        if was_active:
             return "break"
-        self._drag_start = None
 
     def _bind_keys(self):
         self.root.bind_all("<Control-v>", lambda e: self.paste_clipboard())
@@ -533,15 +545,15 @@ class App:
                     duplicates += 1
                 else:
                     try:
-                        sig = file_signature(path)
+                        sig = file_keys(path)
                     except OSError:
                         skipped += 1
                         continue
-                    if sig in signatures:
+                    if sig & signatures:
                         duplicates += 1
                     else:
                         seen.add(key)
-                        signatures.add(sig)
+                        signatures.update(sig)
                         new_items.append((path, sig))
                 if i % 5 == 0 or i == total:
                     post("status", text="正在检查重复项 %d/%d…" % (i, total))
@@ -575,7 +587,7 @@ class App:
             if action == "done":
                 for path, sig in item.get("items", []):
                     self.seen.add(normalize(path))
-                    self.signatures.add(sig)
+                    self.signatures.update(sig)
                     self.paths.append({"path": path, "kind": "图纸"})
                 added = len(item.get("items", []))
                 start = len(self.paths) - added
@@ -609,18 +621,18 @@ class App:
             finish()
 
     def _remove_duplicate_rows(self) -> int:
-        """添加完成后再对整张列表按大小+修改时间做一次重复项清理。"""
+        """添加完成后按大小+修改时间（同名+大小兜底）清理整表重复项。"""
         seen = set()
         remove_idx = []
         for i, item in enumerate(self.paths):
             try:
-                sig = file_signature(item["path"])
+                sig = file_keys(item["path"])
             except OSError:
                 continue
-            if sig in seen:
+            if sig & seen:
                 remove_idx.append(i)
             else:
-                seen.add(sig)
+                seen.update(sig)
         if not remove_idx:
             return 0
         children = self.tree.get_children()
@@ -633,7 +645,7 @@ class App:
         self.signatures = set()
         for p in self.paths:
             try:
-                self.signatures.add(file_signature(p["path"]))
+                self.signatures.update(file_keys(p["path"]))
             except OSError:
                 pass
         for no, item_id in enumerate(self.tree.get_children(), 1):
@@ -687,7 +699,7 @@ class App:
                 path = self.paths[idx]["path"]
                 self.seen.discard(normalize(path))
                 try:
-                    self.signatures.discard(file_signature(path))
+                    self.signatures.difference_update(file_keys(path))
                 except OSError:
                     pass
                 del self.paths[idx]
