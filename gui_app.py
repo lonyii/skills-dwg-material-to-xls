@@ -57,7 +57,7 @@ import_materials.TEMPLATE_ALIASES["sample"] = TEMPLATE_XLS
 
 
 VALID_EXT = (".dwg", ".dxf")
-APP_VERSION = "2.5.15"
+APP_VERSION = "2.5.16"
 
 # 局域网更新源与本地更新目录（只存放 EXE）。
 LAN_UPDATE_DIR = r"\\Jsztnas\团队文件\内部应用"
@@ -562,6 +562,7 @@ class App:
 
             self.updating = False
             self.btn_update.configure(state="normal")
+            self.progress.configure(value=100)
             self.status_var.set("检查更新完成")
             if action == "error":
                 self.append_log("\n[更新失败] %s\n" % item.get("message", ""))
