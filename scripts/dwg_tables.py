@@ -1022,20 +1022,42 @@ def _seq_entities(ents, table):
     lo, hi = table["bounds"]["序号"]
     sc = table.get("scale", 1.0)
     hy = table["header_y"]
-    out = []
     y_floor = table.get("y_floor")   # 同列下方紧邻表头：本表数据不得越过
+    raw = []
     for e in ents:
         if not (lo <= e["x"] < hi):
-            continue
-        if abs(e["y"] - hy) > 42000 * sc:
             continue
         if y_floor is not None and e["y"] < y_floor:
             continue
         t = clean_text(e["t"]).strip()
         if re.fullmatch(r"\d{1,3}", t):
-            out.append({"y": e["y"], "seq": int(t)})
-    # 同一 y 去重：容差取动态行距的一部分，避免扁表格被合并
+            raw.append({"y": e["y"], "seq": int(t)})
+    raw.sort(key=lambda s: s["y"])
+    if not raw:
+        return []
+    # 以表头附近（原 42000*sc 窗口内）的序号为种子，保持原有选行行为。
+    seed_idx = [i for i, s in enumerate(raw) if abs(s["y"] - hy) <= 42000 * sc]
+    if not seed_idx:
+        return []
+    # 大行距图纸（实测 IC25E098：行距 4000、单表高约 19 万，固定窗口只有
+    # 42000*4=16.8 万）末段行会落在窗口外被整段漏掉。按实测行距从种子两端
+    # 连续扩展：只有与本表行距连续的序号才纳入，隔开的其它表格不会被吞入。
     pitch = table.get("row_pitch", 0.0)
+    step = 2.5 * pitch if pitch else 0.0
+    i0, i1 = min(seed_idx), max(seed_idx)
+    if step:
+        while True:
+            grew = False
+            if (i1 + 1 < len(raw) and raw[i1 + 1]["y"] - raw[i1]["y"] <= step):
+                i1 += 1
+                grew = True
+            if (i0 - 1 >= 0 and raw[i0]["y"] - raw[i0 - 1]["y"] <= step):
+                i0 -= 1
+                grew = True
+            if not grew:
+                break
+    out = raw[i0:i1 + 1]
+    # 同一 y 去重：容差取动态行距的一部分，避免扁表格被合并
     dedup_tol = min(60 * sc, pitch * 0.5) if pitch else 60 * sc
     out.sort(key=lambda s: s["y"])
     dedup = []
