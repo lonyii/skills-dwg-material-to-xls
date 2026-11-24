@@ -57,7 +57,7 @@ import_materials.TEMPLATE_ALIASES["sample"] = TEMPLATE_XLS
 
 
 VALID_EXT = (".dwg", ".dxf")
-APP_VERSION = "2.5.21"
+APP_VERSION = "2.5.22"
 
 # 局域网更新源与本地更新目录（只存放 EXE）。
 LAN_UPDATE_DIR = r"\\Jsztnas\团队文件\内部应用"
@@ -319,20 +319,7 @@ class App:
         self.tree.tag_configure("even", background="#FFFFFF")
         self.tree.grid(row=0, column=0, sticky="nsew", padx=(10, 0), pady=10)
 
-        # 鼠标拖拉框选：透明浮层只画选框，事件回传给列表
-        self.drag_win = tk.Toplevel(root, highlightthickness=0, takefocus=0)
-        self.drag_win.withdraw()
-        self.drag_win.overrideredirect(True)
-        try:
-            self.drag_win.wm_attributes("-toolwindow", True)
-            self.drag_win.wm_attributes("-transparentcolor", "#FFFFFF")
-        except tk.TclError:
-            pass
-        self.drag_canvas = tk.Canvas(self.drag_win, bg="#FFFFFF", highlightthickness=0)
-        self.drag_canvas.pack(fill="both", expand=True)
-        self.drag_canvas.bind("<B1-Motion>", self._on_tree_drag)
-        self.drag_canvas.bind("<ButtonRelease-1>", self._on_tree_release)
-        self.drag_win.bind("<ButtonRelease-1>", self._on_tree_release)
+        # 鼠标拖拉框选：直接用列表行高亮表示选中范围，不使用浮层，避免残影
         self._drag_start = None
         self._drag_active = False
         self._drag_selection = ()
@@ -389,51 +376,25 @@ class App:
 
         self.refresh_list()
 
-    def _hide_drag_overlay(self):
-        try:
-            self.drag_canvas.delete("all")
-            self.drag_win.withdraw()
-        except tk.TclError:
-            pass
-        self._drag_active = False
-        self._drag_start = None
-
     def _on_tree_press(self, event):
-        # 任何新的按下都先清掉上一次可能残留的选框
-        self._hide_drag_overlay()
         self._drag_start = (event.x, event.y)
+        self._drag_active = False
         self._drag_selection = tuple(self.tree.selection())
 
     def _on_tree_drag(self, event):
         if not self._drag_start:
             return
         x0, y0 = self._drag_start
-        dx = abs(event.x - x0) + abs(event.y - y0)
         if not self._drag_active:
-            if dx < 6:
+            if abs(event.x - x0) + abs(event.y - y0) < 6:
                 return
             self._drag_active = True
-            rx = self.tree.winfo_rootx()
-            ry = self.tree.winfo_rooty()
-            rw = self.tree.winfo_width()
-            rh = self.tree.winfo_height()
-            self.drag_win.geometry("%dx%d+%d+%d" % (rw, rh, rx, ry))
-            self.drag_win.deiconify()
-            self.drag_win.lift()
-        rw = self.tree.winfo_width()
         rh = self.tree.winfo_height()
-        x1 = max(0, min(event.x, rw))
-        y1 = max(0, min(event.y, rh))
-        x0 = max(0, min(x0, rw))
-        y0 = max(0, min(y0, rh))
-        left, right = min(x0, x1), max(x0, x1)
-        top, bottom = min(y0, y1), max(y0, y1)
-        self.drag_canvas.delete("all")
-        self.drag_canvas.create_rectangle(
-            left, top, right, bottom,
-            outline="#2563EB", width=2, fill="#DBEAFE", stipple="gray50")
+        top, bottom = sorted((y0, event.y))
+        top = max(0, min(top, rh))
+        bottom = max(0, min(bottom, rh))
         rows = set()
-        for yy in range(top, bottom + 1, 4):
+        for yy in range(top, bottom + 1, 3):
             row = self.tree.identify_row(yy)
             if row:
                 rows.add(row)
@@ -442,10 +403,10 @@ class App:
             self.tree.selection_add(row)
 
     def _on_tree_release(self, event):
-        if not self._drag_start:
-            return
         was_active = self._drag_active
-        self._hide_drag_overlay()
+        self._drag_start = None
+        self._drag_active = False
+        self._drag_selection = ()
         if was_active:
             return "break"
 
