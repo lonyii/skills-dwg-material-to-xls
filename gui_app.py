@@ -57,7 +57,7 @@ import_materials.TEMPLATE_ALIASES["sample"] = TEMPLATE_XLS
 
 
 VALID_EXT = (".dwg", ".dxf")
-APP_VERSION = "2.5.19"
+APP_VERSION = "2.5.20"
 
 # 局域网更新源与本地更新目录（只存放 EXE）。
 LAN_UPDATE_DIR = r"\\Jsztnas\团队文件\内部应用"
@@ -315,6 +315,26 @@ class App:
         self.tree.tag_configure("even", background="#FFFFFF")
         self.tree.grid(row=0, column=0, sticky="nsew", padx=(10, 0), pady=10)
 
+        # 鼠标拖拉框选：透明浮层只画选框，事件回传给列表
+        self.drag_win = tk.Toplevel(root, highlightthickness=0, takefocus=0)
+        self.drag_win.withdraw()
+        self.drag_win.overrideredirect(True)
+        try:
+            self.drag_win.wm_attributes("-toolwindow", True)
+            self.drag_win.wm_attributes("-transparentcolor", "#FFFFFF")
+        except tk.TclError:
+            pass
+        self.drag_canvas = tk.Canvas(self.drag_win, bg="#FFFFFF", highlightthickness=0)
+        self.drag_canvas.pack(fill="both", expand=True)
+        self.drag_canvas.bind("<B1-Motion>", self._on_tree_drag)
+        self.drag_canvas.bind("<ButtonRelease-1>", self._on_tree_release)
+        self._drag_start = None
+        self._drag_active = False
+        self._drag_selection = ()
+        self.tree.bind("<ButtonPress-1>", self._on_tree_press, add="+")
+        self.tree.bind("<B1-Motion>", self._on_tree_drag, add="+")
+        self.tree.bind("<ButtonRelease-1>", self._on_tree_release, add="+")
+
         scroll = ttk.Scrollbar(list_card, orient="vertical", command=self.tree.yview)
         scroll.grid(row=0, column=1, sticky="ns", pady=10, padx=(4, 10))
         self.tree.configure(yscrollcommand=scroll.set)
@@ -363,6 +383,59 @@ class App:
         )
 
         self.refresh_list()
+
+    def _on_tree_press(self, event):
+        self._drag_start = (event.x, event.y)
+        self._drag_active = False
+        self._drag_selection = tuple(self.tree.selection())
+
+    def _on_tree_drag(self, event):
+        if not self._drag_start:
+            return
+        x0, y0 = self._drag_start
+        dx = abs(event.x - x0) + abs(event.y - y0)
+        if not self._drag_active:
+            if dx < 6:
+                return
+            self._drag_active = True
+            rx = self.tree.winfo_rootx()
+            ry = self.tree.winfo_rooty()
+            rw = self.tree.winfo_width()
+            rh = self.tree.winfo_height()
+            self.drag_win.geometry("%dx%d+%d+%d" % (rw, rh, rx, ry))
+            self.drag_win.deiconify()
+            self.drag_win.lift()
+        rw = self.tree.winfo_width()
+        rh = self.tree.winfo_height()
+        x1 = max(0, min(event.x, rw))
+        y1 = max(0, min(event.y, rh))
+        x0 = max(0, min(x0, rw))
+        y0 = max(0, min(y0, rh))
+        left, right = min(x0, x1), max(x0, x1)
+        top, bottom = min(y0, y1), max(y0, y1)
+        self.drag_canvas.delete("all")
+        self.drag_canvas.create_rectangle(
+            left, top, right, bottom,
+            outline="#2563EB", width=2, fill="#DBEAFE", stipple="gray50")
+        rows = set()
+        for yy in range(top, bottom + 1, 4):
+            row = self.tree.identify_row(yy)
+            if row:
+                rows.add(row)
+        self.tree.selection_set(self._drag_selection)
+        for row in rows:
+            self.tree.selection_add(row)
+
+    def _on_tree_release(self, event):
+        if not self._drag_start:
+            return
+        if self._drag_active:
+            self.drag_win.withdraw()
+            self.drag_canvas.delete("all")
+            self._drag_active = False
+            self._drag_start = None
+            return "break"
+        self._drag_start = None
 
     def _bind_keys(self):
         self.root.bind_all("<Control-v>", lambda e: self.paste_clipboard())
@@ -535,10 +608,49 @@ class App:
         else:
             finish()
 
+    def _remove_duplicate_rows(self) -> int:
+        """添加完成后再对整张列表按大小+修改时间做一次重复项清理。"""
+        seen = set()
+        remove_idx = []
+        for i, item in enumerate(self.paths):
+            try:
+                sig = file_signature(item["path"])
+            except OSError:
+                continue
+            if sig in seen:
+                remove_idx.append(i)
+            else:
+                seen.add(sig)
+        if not remove_idx:
+            return 0
+        children = self.tree.get_children()
+        for i in sorted(remove_idx, reverse=True):
+            if i < len(children):
+                self.tree.delete(children[i])
+            if i < len(self.paths):
+                del self.paths[i]
+        self.seen = {normalize(p["path"]) for p in self.paths}
+        self.signatures = set()
+        for p in self.paths:
+            try:
+                self.signatures.add(file_signature(p["path"]))
+            except OSError:
+                pass
+        for no, item_id in enumerate(self.tree.get_children(), 1):
+            values = list(self.tree.item(item_id, "values"))
+            if values:
+                values[0] = no
+                self.tree.item(item_id, values=values)
+        return len(remove_idx)
+
     def _finish_add(self, added, duplicates, skipped, folder_inputs, silent):
         self.adding = False
         self._set_add_busy(False)
-        if duplicates:
+        removed = self._remove_duplicate_rows()
+        if removed:
+            self.status_var.set("已清理列表重复项 %d 项（共 %d 张图纸）"
+                                % (removed, len(self.paths)))
+        elif duplicates:
             self.status_var.set("已自动去重 %d 项（列表共 %d 张图纸）"
                                 % (duplicates, len(self.paths)))
         elif added:
