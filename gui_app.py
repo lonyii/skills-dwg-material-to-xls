@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import queue
 import re
@@ -57,7 +58,7 @@ import_materials.TEMPLATE_ALIASES["sample"] = TEMPLATE_XLS
 
 
 VALID_EXT = (".dwg", ".dxf")
-APP_VERSION = "2.5.16"
+APP_VERSION = "2.5.17"
 
 # 局域网更新源与本地更新目录（只存放 EXE）。
 LAN_UPDATE_DIR = r"\\Jsztnas\团队文件\内部应用"
@@ -88,7 +89,37 @@ def stamp() -> str:
 
 
 def normalize(path: str) -> str:
-    return os.path.normcase(os.path.abspath(path))
+    """统一路径大小写/斜杠/符号链接，用于列表去重与包含关系判断。"""
+    return os.path.normcase(os.path.realpath(os.path.abspath(path)))
+
+
+def is_within(child: str, parent: str) -> bool:
+    """child 是否在 parent 文件夹内（含自身）。"""
+    try:
+        return os.path.commonpath([normalize(child), normalize(parent)]) == normalize(parent)
+    except (ValueError, OSError):
+        return False
+
+
+def file_hash(path: str) -> str:
+    """按内容计算 SHA256，用于跨文件夹识别重复图纸。"""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def drawings_in_folder(folder: str) -> list:
+    """递归列出文件夹中的 DWG/DXF，规则与 auto_export.expand_inputs 一致。"""
+    found = []
+    for root, dirs, names in os.walk(folder):
+        dirs[:] = [d for d in dirs
+                   if not d.startswith((".", "~$")) and d != "材料平差输出"]
+        for name in names:
+            if name.lower().endswith(VALID_EXT) and not name.startswith("~$"):
+                found.append(os.path.join(root, name))
+    return sorted(found)
 
 
 def parse_version(text) -> tuple:
@@ -167,8 +198,9 @@ class App:
         self.root.minsize(900, 600)
         self.root.configure(bg="#F3F6FB")
 
-        self.paths = []            # [{"path": str, "kind": "图纸"|"文件夹"}]
-        self.seen = set()
+        self.paths = []            # [{"path": str, "kind": "图纸"}]
+        self.seen = set()          # 规范化路径
+        self.hashes = set()        # 图纸内容 SHA256，用于跨文件夹去重
         self.running = False
         self.updating = False
         self.output_dir = ""
@@ -262,7 +294,7 @@ class App:
         self.btn_delete.grid(row=0, column=2, padx=(0, 8))
         self.btn_clear.grid(row=0, column=3, padx=(0, 8))
         self.btn_update.grid(row=0, column=4, padx=(0, 8))
-        ttk.Label(tools, text="右键列表可增删 · 可拖入 · 可 Ctrl+V 粘贴", style="Card.TLabel").grid(
+        ttk.Label(tools, text="文件夹自动展开 · 内容去重 · 可拖入 · Ctrl+V 粘贴", style="Card.TLabel").grid(
             row=0, column=5, sticky="w", padx=(8, 0)
         )
         self.btn_start.grid(row=0, column=7, sticky="e")
@@ -373,29 +405,52 @@ class App:
         self.status_var.set("已添加 %d 项" % len(self.paths))
 
     def add_paths(self, paths, silent=False):
+        """添加图纸/文件夹并自动去重：按路径 + 内容 SHA256 跨文件夹去重。"""
         added = 0
         skipped = 0
+        duplicates = 0
+        folder_inputs = 0
+        candidates = []
         for raw in paths or []:
             path = os.path.abspath(str(raw).strip().strip('"'))
             if not os.path.exists(path):
                 skipped += 1
                 continue
             if os.path.isdir(path):
-                kind = "文件夹"
+                folder_inputs += 1
+                candidates.extend(drawings_in_folder(path))
             elif path.lower().endswith(VALID_EXT):
-                kind = "图纸"
+                candidates.append(path)
             else:
                 skipped += 1
                 continue
+
+        for path in candidates:
             key = normalize(path)
             if key in self.seen:
+                duplicates += 1
+                continue
+            try:
+                digest = file_hash(path)
+            except OSError:
+                skipped += 1
+                continue
+            if digest in self.hashes:
+                duplicates += 1
                 continue
             self.seen.add(key)
-            self.paths.append({"path": path, "kind": kind})
+            self.hashes.add(digest)
+            self.paths.append({"path": path, "kind": "图纸"})
             added += 1
+
         self.refresh_list()
-        if added:
-            self.status_var.set("已添加 %d 项（共 %d 项）" % (added, len(self.paths)))
+        if duplicates:
+            self.status_var.set("已自动去重 %d 项（列表共 %d 张图纸）"
+                                % (duplicates, len(self.paths)))
+        elif added:
+            self.status_var.set("已添加 %d 张图纸（共 %d 张）" % (added, len(self.paths)))
+        elif folder_inputs and not candidates:
+            self.status_var.set("文件夹中未找到 .dwg / .dxf 图纸")
         if skipped and not silent:
             messagebox.showwarning(
                 "已跳过", "已忽略 %d 个无效路径（仅支持 .dwg / .dxf 文件或文件夹）。" % skipped
@@ -423,13 +478,19 @@ class App:
         )
         for idx in indexes:
             if 0 <= idx < len(self.paths):
-                self.seen.discard(normalize(self.paths[idx]["path"]))
+                path = self.paths[idx]["path"]
+                self.seen.discard(normalize(path))
+                try:
+                    self.hashes.discard(file_hash(path))
+                except OSError:
+                    pass
                 del self.paths[idx]
         self.refresh_list()
 
     def clear_all(self):
         self.paths.clear()
         self.seen.clear()
+        self.hashes.clear()
         self.refresh_list()
 
     def on_right_click(self, event):
