@@ -36,6 +36,7 @@ import codecs
 import json
 import os
 import re
+import shutil
 import sys
 import time
 
@@ -132,6 +133,18 @@ def parse_qty(s: str):
 # --------------------------------------------------------------------------- #
 # 实体读取
 # --------------------------------------------------------------------------- #
+def _reset_com_cache():
+    """清除损坏的 pywin32 gen_py 缓存（常见于 CLSIDToClassMap 缺失）。"""
+    try:
+        import win32com.client.gencache as gencache
+        path = gencache.GetGeneratePath()
+        if os.path.isdir(path):
+            shutil.rmtree(path, ignore_errors=True)
+            print("[COM] 已清理损坏的 gen_py 缓存：%s" % path)
+    except Exception:                          # noqa: BLE001
+        pass
+
+
 def open_cad_app(retries=3):
     """
     打开一个 CAD COM 实例，返回 (app, owns)。
@@ -143,6 +156,7 @@ def open_cad_app(retries=3):
     except ImportError as exc:
         raise RuntimeError("需要 pywin32：python -m pip install pywin32") from exc
     last = None
+    cache_reset = False
     for attempt in range(retries):
         for pid in CAD_PROGIDS:
             for factory in ("DispatchEx", "Dispatch"):
@@ -151,6 +165,18 @@ def open_cad_app(retries=3):
                     return app, factory == "DispatchEx"
                 except Exception as exc:       # noqa: BLE001
                     last = exc
+                    text = str(exc)
+                    if not cache_reset and (
+                            "CLSIDTo" in text or "gen_py" in text.lower()
+                            or "AttributeError" in type(exc).__name__):
+                        _reset_com_cache()
+                        cache_reset = True
+                        # 缓存重建后立刻重试当前 ProgID
+                        try:
+                            app = getattr(win32, factory)(pid)
+                            return app, factory == "DispatchEx"
+                        except Exception as exc2:  # noqa: BLE001
+                            last = exc2
         if attempt < retries - 1:
             time.sleep(1.5)
     raise RuntimeError("未找到可用的 CAD COM 组件（浩辰/AutoCAD/中望）。最后一次错误：%s" % last)
