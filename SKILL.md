@@ -50,6 +50,27 @@ Excel COM 写入可完整保留模板的所有工作表、公式（如 O 列
 - 用户明确给出「竣工图」「施工图」两份 `.dwg`，需要精细控制时用 `import_materials.py`
 - 用户提到「材料平差」「1-初步比对」「2-汇总」「材料汇总表」「施工图/竣工图材料核对」「变更结算材料表」
 - 用户给出成品 `.xls` 模板或「加强比对版」汇总模板，要求按同样格式批量生成新项目的文件
+- **用户说「生成材料平差 EXE / 打包成 EXE / 做成可执行文件 / 一键打包」**——
+  直接运行本技能根目录的 `build_exe.py`，生成图形界面单文件程序
+
+## 一键打包材料平差 EXE（用户说「生成材料平差EXE」时执行）
+
+技能包自带 `gui_app.py`（图形界面源码）与 `build_exe.py`（打包脚本），
+内置加强比对版模板，打包结果不依赖外部 `.xls`。AI 收到打包请求后，
+**只需在技能根目录执行一条命令**：
+
+```bash
+python build_exe.py
+```
+
+- 自动寻找带 `tkinter` 的 Python（必要时自动切换解释器）、按需安装 PyInstaller
+- 手动双击可用 `build_exe.bat`（ASCII 编码 + 切换 UTF-8 代码页，避免中文乱码）
+- 输出：`dist/材料平差批量生成器.exe`，约 14 MB，可复制到未安装 Python 的 Windows 电脑
+- EXE 界面支持：批量添加图纸 / 文件夹、右键增删、拖放、Ctrl+V 粘贴剪贴板文件；
+  成品写入桌面的 `材料平差输出_时间戳/`，完成后自动打开该文件夹
+- **仓库只推送源码**：`dist/`、`build/`、`*.spec`、`*.exe` 已加入 `.gitignore`，
+  不要把这些构建产物提交或推送到 GitHub；其它用户克隆仓库后让自己的 AI 运行
+  `python build_exe.py` 即可在他们本机生成 EXE
 
 ## 环境依赖
 
@@ -385,6 +406,9 @@ VLISP；中望等若不兼容自动回退，速度同旧版但功能不受影响
 
 - `scripts/auto_export.py` — **默认入口**：若干 DWG / 文件夹自动判别竣工/施工图、按工程分组、按「编号+名称」命名、单竣工图规则
 - `run_batch.bat` — Windows 拖放批处理：脱离 AI 运行，自动定位 Python、装 `pywin32`、写运行日志
+- `gui_app.py` — **EXE 图形界面源码**：批量列表、右键增删、拖放、Ctrl+V 粘贴，内置模板，成品写入桌面时间戳文件夹并自动打开
+- `build_exe.py` — **一键打包脚本**：用户说「生成材料平差 EXE」时在技能根目录运行，生成 `dist/材料平差批量生成器.exe`
+- `build_exe.bat` — 手工双击入口（ASCII 编码 + UTF-8 代码页），转调 `build_exe.py`
 - `scripts/dwg_tables.py` — DWG/DXF 文字提取、材料表识别与重建（含 inspect/extract 子命令）
 - `scripts/import_materials.py` — 分组匹配、核对报告、Excel 保真写入与 2-汇总同步
 - `references/layout.md` — 两套模板的列定义、汇总联动规则、CAD 识别规则与可调参数

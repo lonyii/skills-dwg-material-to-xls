@@ -10,3 +10,10 @@ skill-backups/
 .env
 *token*.txt
 _*.local
+_cache/
+_scratch/
+.checklist_seen_version
+dist/
+build/
+*.spec
+*.exe
