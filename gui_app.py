@@ -7,25 +7,29 @@
 
 from __future__ import annotations
 
-import ctypes
 import os
 import queue
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
 import threading
 import time
 import traceback
 import winreg
-from ctypes import c_int, c_ssize_t, c_void_p, create_unicode_buffer, wintypes
-from ctypes import CFUNCTYPE
-from ctypes.wintypes import HWND, LPARAM, UINT, WPARAM
 
 import pythoncom
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 import win32clipboard
 import win32con
+
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+except ImportError:
+    DND_FILES = None
+    TkinterDnD = None
 
 # 技能包布局：脚本在 scripts/；独立打包布局：脚本与本文件同目录。
 _SCRIPT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts")
@@ -53,8 +57,10 @@ import_materials.TEMPLATE_ALIASES["sample"] = TEMPLATE_XLS
 
 
 VALID_EXT = (".dwg", ".dxf")
-WM_DROPFILES = 0x0233
-GWL_WNDPROC = -4
+
+# 局域网更新源与本地更新目录（只存放 EXE）。
+LAN_UPDATE_DIR = r"\\团队文件\内部应用"
+UPDATE_FOLDER = "材料平差EXE更新"
 
 
 def desktop_dir() -> str:
@@ -84,60 +90,26 @@ def normalize(path: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Windows 文件拖放（WM_DROPFILES），不依赖第三方拖放库
+# 拖放与局域网更新辅助
 # --------------------------------------------------------------------------- #
-LRESULT = c_ssize_t
-WNDPROC = CFUNCTYPE(LRESULT, HWND, UINT, WPARAM, LPARAM)
-_user32 = ctypes.windll.user32
-_shell32 = ctypes.windll.shell32
-
-_set_window_proc = getattr(_user32, "SetWindowLongPtrW", _user32.SetWindowLongW)
-_set_window_proc.argtypes = [HWND, c_int, c_void_p]
-_set_window_proc.restype = c_void_p
-
-_call_window_proc = _user32.CallWindowProcW
-_call_window_proc.argtypes = [c_void_p, HWND, UINT, WPARAM, LPARAM]
-_call_window_proc.restype = LRESULT
-
-_shell32.DragAcceptFiles.argtypes = [HWND, wintypes.BOOL]
-_shell32.DragQueryFileW.argtypes = [c_void_p, UINT, wintypes.LPWSTR, UINT]
-_shell32.DragQueryFileW.restype = UINT
-_shell32.DragFinish.argtypes = [c_void_p]
-
-_DROP_STATES = []
+def parse_drop_data(data) -> list:
+    """解析 tkdnd 的拖放数据；含空格路径用花括号包裹。"""
+    if not data:
+        return []
+    if isinstance(data, (tuple, list)):
+        return [str(p) for p in data]
+    return [p.strip().strip("{}") for p in re.findall(r"\{[^{}]*\}|[^\s{}]+", str(data))]
 
 
-def enable_file_drop(widget, callback) -> None:
-    widget.update_idletasks()
-    try:
-        hwnd = int(widget.winfo_id())
-    except Exception:
-        return
-    if hwnd <= 0:
-        return
-    state = {"old": 0, "proc": None}
-
-    def wndproc(h_wnd, msg, w_param, l_param):
-        if msg == WM_DROPFILES:
-            hdrop = c_void_p(w_param)
-            count = _shell32.DragQueryFileW(hdrop, 0xFFFFFFFF, None, 0)
-            files = []
-            for i in range(count):
-                length = _shell32.DragQueryFileW(hdrop, i, None, 0)
-                buf = create_unicode_buffer(length + 1)
-                _shell32.DragQueryFileW(hdrop, i, buf, length + 1)
-                files.append(buf.value)
-            _shell32.DragFinish(hdrop)
-            widget.after(0, lambda: callback(files))
-            return 0
-        return _call_window_proc(state["old"], h_wnd, msg, w_param, l_param)
-
-    state["proc"] = WNDPROC(wndproc)
-    state["old"] = _set_window_proc(
-        hwnd, GWL_WNDPROC, ctypes.cast(state["proc"], c_void_p).value
-    ) or 0
-    _shell32.DragAcceptFiles(hwnd, True)
-    _DROP_STATES.append(state)
+def local_update_dir() -> str:
+    """本地更新目录：EXE 所在目录下的专用文件夹（只放 EXE）。"""
+    if getattr(sys, "frozen", False):
+        base = os.path.dirname(os.path.abspath(sys.executable))
+    else:
+        base = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(base, UPDATE_FOLDER)
+    os.makedirs(path, exist_ok=True)
+    return path
 
 
 def clipboard_paths():
@@ -193,10 +165,7 @@ class App:
         self._build_ui()
         self._bind_keys()
 
-        self.root.update_idletasks()
-        enable_file_drop(self.root, self.add_paths)
-        enable_file_drop(self.tree, self.add_paths)
-        enable_file_drop(self.log_text, self.add_paths)
+        self._setup_dnd()
 
     def _build_style(self):
         style = ttk.Style()
@@ -271,14 +240,16 @@ class App:
         self.btn_add_dir = ttk.Button(tools, text="添加文件夹", command=self.add_folder_dialog)
         self.btn_delete = ttk.Button(tools, text="删除选中", command=self.delete_selected)
         self.btn_clear = ttk.Button(tools, text="清空", command=self.clear_all)
+        self.btn_update = ttk.Button(tools, text="检查更新", command=self.lan_update)
         self.btn_start = ttk.Button(tools, text="开始生成", style="Accent.TButton", command=self.start)
 
         self.btn_add_file.grid(row=0, column=0, padx=(0, 8))
         self.btn_add_dir.grid(row=0, column=1, padx=(0, 8))
         self.btn_delete.grid(row=0, column=2, padx=(0, 8))
         self.btn_clear.grid(row=0, column=3, padx=(0, 8))
+        self.btn_update.grid(row=0, column=4, padx=(0, 8))
         ttk.Label(tools, text="右键列表可增删 · 可拖入 · 可 Ctrl+V 粘贴", style="Card.TLabel").grid(
-            row=0, column=4, sticky="w", padx=(8, 0)
+            row=0, column=5, sticky="w", padx=(8, 0)
         )
         self.btn_start.grid(row=0, column=7, sticky="e")
 
@@ -359,6 +330,18 @@ class App:
         self.tree.bind("<Delete>", lambda e: self.delete_selected())
         self.tree.bind("<Control-a>", lambda e: self.tree.selection_set(self.tree.get_children()))
         self.tree.bind("<Control-A>", lambda e: self.tree.selection_set(self.tree.get_children()))
+
+    def _setup_dnd(self):
+        """tkdnd 负责 Windows 文件拖放，避免自写 WndProc 的 GIL 崩溃。"""
+        if TkinterDnD is None or DND_FILES is None:
+            return
+        for widget in (self.root, self.tree, self.log_text):
+            try:
+                widget.drop_target_register(DND_FILES)
+                widget.dnd_bind("<<Drop>>",
+                                lambda e: self.add_paths(parse_drop_data(e.data)))
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------ #
     # 列表操作
@@ -467,8 +450,62 @@ class App:
     def set_busy(self, busy: bool):
         self.running = busy
         state = "disabled" if busy else "normal"
-        for btn in (self.btn_add_file, self.btn_add_dir, self.btn_delete, self.btn_clear, self.btn_start):
+        for btn in (self.btn_add_file, self.btn_add_dir, self.btn_delete,
+                    self.btn_clear, self.btn_update, self.btn_start):
             btn.configure(state=state)
+
+    def lan_update(self):
+        """从局域网共享目录拉取最新 EXE，保存到专用更新文件夹（只放 EXE）。"""
+        source = os.environ.get("DWG2XLS_LAN_UPDATE_DIR", LAN_UPDATE_DIR)
+        if not os.path.isdir(source):
+            msg = "找不到局域网更新目录：\n%s\n\n请确认共享路径可访问。" % source
+            self.append_log("\n[更新失败] " + msg + "\n")
+            messagebox.showerror("检查更新", msg)
+            return
+        exes = [os.path.join(source, n) for n in os.listdir(source)
+                if n.lower().endswith(".exe") and os.path.isfile(os.path.join(source, n))]
+        if not exes:
+            msg = "更新目录中没有 EXE 文件：\n%s" % source
+            self.append_log("\n[更新失败] " + msg + "\n")
+            messagebox.showwarning("检查更新", msg)
+            return
+        latest = max(exes, key=lambda p: os.path.getmtime(p))
+        target_dir = local_update_dir()
+        target = os.path.join(target_dir, os.path.basename(latest))
+
+        if os.path.isfile(target) and \
+                os.path.getsize(target) == os.path.getsize(latest) and \
+                abs(os.path.getmtime(target) - os.path.getmtime(latest)) < 2:
+            self.append_log("\n[更新] 本地已是最新版本：%s\n" % target)
+            if messagebox.askyesno("检查更新", "已是最新版本。\n\n是否打开更新文件夹？"):
+                os.startfile(target_dir)
+            return
+
+        try:
+            shutil.copy2(latest, target)
+            # 该目录由程序自建，仅保留 EXE；清掉以前下载的旧版本，避免误运行。
+            for name in os.listdir(target_dir):
+                if name.lower().endswith(".exe") and os.path.abspath(
+                        os.path.join(target_dir, name)) != os.path.abspath(target):
+                    try:
+                        os.remove(os.path.join(target_dir, name))
+                    except OSError:
+                        pass
+        except OSError as exc:
+            msg = "下载更新失败：%s" % exc
+            self.append_log("\n[更新失败] " + msg + "\n")
+            messagebox.showerror("检查更新", msg)
+            return
+
+        self.append_log("\n[更新完成] %s\n" % target)
+        if messagebox.askyesno(
+                "检查更新",
+                "新版本已保存到：\n%s\n\n是否立即启动新版本？" % target):
+            try:
+                subprocess.Popen([target], close_fds=True)
+                self.root.after(600, self.root.destroy)
+            except OSError as exc:
+                messagebox.showerror("局域网更新", "启动新版本失败：%s" % exc)
 
     def start(self):
         if self.running:
@@ -564,7 +601,7 @@ class App:
 
 
 def main():
-    root = tk.Tk()
+    root = TkinterDnD.Tk() if TkinterDnD is not None else tk.Tk()
     App(root)
     root.mainloop()
 

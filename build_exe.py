@@ -118,6 +118,12 @@ def main():
         if r.returncode != 0:
             raise SystemExit("PyInstaller 安装失败，请手动执行 pip install pyinstaller")
 
+    if not has_module(sys.executable, "tkinterdnd2"):
+        print("未检测到 tkinterdnd2，正在自动安装…")
+        r = subprocess.run([sys.executable, "-m", "pip", "install", "tkinterdnd2"])
+        if r.returncode != 0:
+            raise SystemExit("tkinterdnd2 安装失败，请手动执行 pip install tkinterdnd2")
+
     os.makedirs(DIST, exist_ok=True)
     os.makedirs(BUILD, exist_ok=True)
 
@@ -130,6 +136,8 @@ def main():
         "--specpath", ROOT,
         "--paths", os.path.join(ROOT, "scripts"),
         "--add-data", TEMPLATE + os.pathsep + "assets",
+        "--hidden-import", "tkinterdnd2",
+        "--collect-all", "tkinterdnd2",
         "--hidden-import", "auto_export",
         "--hidden-import", "dwg_tables",
         "--hidden-import", "import_materials",

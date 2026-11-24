@@ -182,7 +182,7 @@ python scripts/auto_export.py "D:/2026结算图纸" --out-dir "D:/输出"
 只需 Windows + Python 3 + 浩辰/AutoCAD/中望 CAD + Microsoft Excel，
 **不需要 WorkBuddy 或任何 AI**。
 
-### 一键打包图形界面 EXE（v2.5.12+）
+### 一键打包图形界面 EXE（v2.5.13+）
 
 把整个技能目录复制到任意 Windows 电脑，把下面这句话发给该电脑上的 AI 即可：
 
@@ -199,12 +199,15 @@ python build_exe.py --open   # 打包完成后打开 dist 目录
 
 也可手工双击 `build_exe.bat`（ASCII 编码 + 切换 UTF-8 代码页）。脚本会自动：
 
-- 检测并切换到带 `tkinter` 的 Python，缺 PyInstaller 时自动安装
-- 把 `gui_app.py`、`scripts/` 与内置模板 `assets/template_summary.xls` 打进单个 EXE
+- 检测并切换到带 `tkinter` 的 Python，缺 PyInstaller / `tkinterdnd2` 时自动安装
+- 把 `gui_app.py`、`scripts/`、拖放组件与内置模板 `assets/template_summary.xls` 打进单个 EXE
 - 输出 `dist/材料平差批量生成器.exe`，可复制到未装 Python 的 Windows 电脑使用
 
 EXE 界面支持批量添加图纸/文件夹、右键增删、拖放、Ctrl+V 粘贴剪贴板文件；
 成品统一写入桌面的 `材料平差输出_时间戳/`，完成后自动打开成品文件夹。
+点击工具栏「检查更新」会从 `\\团队文件\内部应用` 拉取最新 EXE，保存到程序目录下
+自动创建的 `材料平差EXE更新/`（只存放 EXE），下载后可选择立即启动新版本。
+测试时可用环境变量 `DWG2XLS_LAN_UPDATE_DIR` 覆盖更新源目录。
 
 > 仓库只推送源码：`dist/`、`build/`、`*.spec`、`*.exe` 均已在 `.gitignore` 中忽略。
 > 其它用户克隆仓库后，让自己的 AI 运行 `python build_exe.py` 即可在本机生成 EXE，
@@ -311,6 +314,7 @@ dwg-material-to-xls/
 
 | 版本 | 日期 | 内容 |
 |---|---|---|
+| 2.5.13 | 2026-11-24 | 修复 EXE 拖入 DWG 闪退：自写 ctypes WndProc 触发 Python GIL 致命错误，改用 tkinterdnd2 处理拖放并随 EXE 打包；新增工具栏「检查更新」按钮，从 `\\团队文件\内部应用` 拉取最新 EXE 到程序目录下自动创建的 `材料平差EXE更新/`（只存 EXE），可立即启动新版本；build_exe.py 自动安装并打包 tkinterdnd2。 |
 | 2.5.12 | 2026-11-24 | 新增图形界面单文件 EXE 与一键打包脚本：`gui_app.py` 支持批量添加图纸/文件夹、右键增删、拖放、Ctrl+V 粘贴，内置加强比对版模板，成品写入桌面时间戳文件夹并自动打开；`build_exe.py` 自动切换带 tkinter 的 Python、按需安装 PyInstaller，一键生成 `dist/材料平差批量生成器.exe`；`build_exe.bat` 用 ASCII 编码 + UTF-8 代码页规避中文乱码。SKILL.md 增加「生成材料平差 EXE」触发指令；`.gitignore` 忽略 dist/build/spec/exe，仓库只推源码。 |
 | 2.5.11 | 2026-11-24 | 修复大行距图纸材料表末段整段漏项：IC25E098 行距 4000、单表高约 19 万，旧固定窗口 42000×比例只覆盖 16.8 万，每张表末 6~7 行被截掉共漏 19 项。`_seq_entities` 改为按实测行距从种子行向两端连续扩展，隔开的多页表不会被吞入。竣工 168→187 行、匹配 179/179、9 表公式保留；NC25E096 室外同因恢复 12 行，其余 11 张缓存图纸无变化。 |
 | 2.5.10 | 2026-11-19 | 修复同时提供 4 张图（审+室内/室外 + NC25E096 室内/室外）的三处问题：施工图因图内「详见竣工图」引用句被误判为竣工图（全表施工图时直接判 design）；NC25E096-室内与审+室内材料表完全相同却两份并入致施工图翻倍（新增按材料行签名去重）；施工图长名称换行（前行带数量+后行续文）也能合并为完整物料。四图验收竣工155/施工168、成品174行、调压柜描述完整。 |

@@ -63,11 +63,14 @@ Excel COM 写入可完整保留模板的所有工作表、公式（如 O 列
 python build_exe.py
 ```
 
-- 自动寻找带 `tkinter` 的 Python（必要时自动切换解释器）、按需安装 PyInstaller
+- 自动寻找带 `tkinter` 的 Python（必要时自动切换解释器）、按需安装 PyInstaller 与 `tkinterdnd2`
 - 手动双击可用 `build_exe.bat`（ASCII 编码 + 切换 UTF-8 代码页，避免中文乱码）
 - 输出：`dist/材料平差批量生成器.exe`，约 14 MB，可复制到未安装 Python 的 Windows 电脑
 - EXE 界面支持：批量添加图纸 / 文件夹、右键增删、拖放、Ctrl+V 粘贴剪贴板文件；
   成品写入桌面的 `材料平差输出_时间戳/`，完成后自动打开该文件夹
+- **局域网更新**：点击「检查更新」从 `\\团队文件\内部应用` 拉取最新 EXE，
+  保存到 EXE 所在目录下自动创建的 `材料平差EXE更新/`，该文件夹只存放 EXE；
+  下载完成后可选择立即启动新版本（测试时可用环境变量 `DWG2XLS_LAN_UPDATE_DIR` 覆盖源目录）
 - **仓库只推送源码**：`dist/`、`build/`、`*.spec`、`*.exe` 已加入 `.gitignore`，
   不要把这些构建产物提交或推送到 GitHub；其它用户克隆仓库后让自己的 AI 运行
   `python build_exe.py` 即可在他们本机生成 EXE
