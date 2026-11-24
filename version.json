@@ -2,11 +2,12 @@
   "skill": "dwg-material-to-xls",
   "author": "lonyii",
   "email": "lonyii@qq.com",
-  "version": "2.5.14",
+  "version": "2.5.15",
   "released": "2026-11-24",
   "repo": "https://github.com/lonyii/skills-dwg-material-to-xls",
   "branch": "main",
   "changelog": [
+    "2.5.15 (2026-11-24) 「检查更新」改为后台线程执行，检查网络与下载时界面不再卡住；先按 EXE 文件名中的版本号（构建时自动从 version.json 写入，如 材料平差批量生成器_v2.5.15.exe）比较，只有共享版本更高才下载，否则提示已是最新版本；无版本号时按文件时间/大小兜底。弹窗改回主线程处理。",
     "2.5.14 (2026-11-24) 修正局域网更新源为 \\\\Jsztnas\\团队文件\\内部应用；「检查更新」会在该地址下自建「材料平差EXE更新」文件夹并只从该文件夹读取 EXE，未放 EXE 时自动打开该文件夹提示。已将当前 EXE 放入该共享文件夹作为初始版本。",
     "2.5.13 (2026-11-24) 修复图形界面拖入 DWG 闪退：自写 ctypes WndProc 会在消息回调时触发 Python GIL 致命错误，改用成熟的 tkinterdnd2 处理拖放并随 EXE 一起打包；Tk 的 winfo_id 只是 TkChild 子句柄的问题同步消除。新增「局域网更新」按钮：从 \\\\团队文件\\内部应用 拉取最新 EXE，保存到程序目录下自动创建的「材料平差EXE更新」文件夹，该文件夹只保留 EXE，下载后可选择立即启动新版本。build_exe.py 自动安装并打包 tkinterdnd2。",
     "2.5.12 (2026-11-24) 新增图形界面单文件 EXE 与一键打包脚本：gui_app.py 支持批量添加 DWG/DXF 与文件夹、右键增删、拖放、Ctrl+V 粘贴剪贴板文件，内置加强比对版模板，成品写入桌面「材料平差输出_时间戳」并在完成后自动打开；build_exe.py 自动切换带 tkinter 的 Python、按需安装 PyInstaller、一键生成 dist/材料平差批量生成器.exe；build_exe.bat 用 ASCII 编码 + UTF-8 代码页规避中文乱码。SKILL.md 增加触发指令「生成材料平差 EXE」；.gitignore 忽略 dist/build/spec/exe，仓库只推源码。",

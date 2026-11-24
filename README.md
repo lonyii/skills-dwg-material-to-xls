@@ -193,7 +193,7 @@ python scripts/auto_export.py "D:/2026结算图纸" --out-dir "D:/输出"
 AI 只需执行一条命令：
 
 ```bash
-python build_exe.py          # 生成 dist/材料平差批量生成器.exe
+python build_exe.py          # 生成 dist/材料平差批量生成器_v版本号.exe
 python build_exe.py --open   # 打包完成后打开 dist 目录
 ```
 
@@ -201,12 +201,13 @@ python build_exe.py --open   # 打包完成后打开 dist 目录
 
 - 检测并切换到带 `tkinter` 的 Python，缺 PyInstaller / `tkinterdnd2` 时自动安装
 - 把 `gui_app.py`、`scripts/`、拖放组件与内置模板 `assets/template_summary.xls` 打进单个 EXE
-- 输出 `dist/材料平差批量生成器.exe`，可复制到未装 Python 的 Windows 电脑使用
+- 输出 `dist/材料平差批量生成器_v<版本号>.exe`（版本号取自 `version.json`），可复制到未装 Python 的 Windows 电脑使用
 
 EXE 界面支持批量添加图纸/文件夹、右键增删、拖放、Ctrl+V 粘贴剪贴板文件；
 成品统一写入桌面的 `材料平差输出_时间戳/`，完成后自动打开成品文件夹。
-点击工具栏「检查更新」会从 `\\Jsztnas\团队文件\内部应用` 拉取最新 EXE；
-程序会在该更新地址下自建 `材料平差EXE更新/` 专用文件夹并只从其中读取 EXE，
+点击工具栏「检查更新」会在后台线程访问 `\\Jsztnas\团队文件\内部应用`，检查时界面不会卡住；
+程序在该地址下自建 `材料平差EXE更新/` 专用文件夹并只从其中读取 EXE，
+先按文件名中的版本号比较，**只有共享版本更高才下载**，否则提示已是最新版本；
 下载后保存到程序目录下自动创建的同名文件夹（只存放 EXE），可选择立即启动新版本。
 测试时可用环境变量 `DWG2XLS_LAN_UPDATE_DIR` 覆盖更新源目录。
 
@@ -315,6 +316,7 @@ dwg-material-to-xls/
 
 | 版本 | 日期 | 内容 |
 |---|---|---|
+| 2.5.15 | 2026-11-24 | 「检查更新」改为后台线程执行，检查网络与下载不再卡住界面；EXE 文件名自动带版本号（如 v2.5.15），先比较版本，只有共享版本更高才下载，否则提示已是最新版本；无版本号时按文件时间/大小兜底。构建脚本自动从 version.json 读取版本号。 |
 | 2.5.14 | 2026-11-24 | 修正局域网更新源为 `\\Jsztnas\团队文件\内部应用`；「检查更新」在该地址下自建 `材料平差EXE更新/` 文件夹并只从其中读取 EXE，无 EXE 时自动打开该文件夹提示；已放入当前 EXE 作为初始版本。 |
 | 2.5.13 | 2026-11-24 | 修复 EXE 拖入 DWG 闪退：自写 ctypes WndProc 触发 Python GIL 致命错误，改用 tkinterdnd2 处理拖放并随 EXE 打包；新增工具栏「检查更新」按钮，从 `\\团队文件\内部应用` 拉取最新 EXE 到程序目录下自动创建的 `材料平差EXE更新/`（只存 EXE），可立即启动新版本；build_exe.py 自动安装并打包 tkinterdnd2。 |
 | 2.5.12 | 2026-11-24 | 新增图形界面单文件 EXE 与一键打包脚本：`gui_app.py` 支持批量添加图纸/文件夹、右键增删、拖放、Ctrl+V 粘贴，内置加强比对版模板，成品写入桌面时间戳文件夹并自动打开；`build_exe.py` 自动切换带 tkinter 的 Python、按需安装 PyInstaller，一键生成 `dist/材料平差批量生成器.exe`；`build_exe.bat` 用 ASCII 编码 + UTF-8 代码页规避中文乱码。SKILL.md 增加「生成材料平差 EXE」触发指令；`.gitignore` 忽略 dist/build/spec/exe，仓库只推源码。 |

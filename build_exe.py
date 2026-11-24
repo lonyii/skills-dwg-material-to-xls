@@ -16,12 +16,16 @@
 from __future__ import annotations
 
 import glob
+import json
 import os
 import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-EXE_NAME = "材料平差批量生成器"
+with open(os.path.join(ROOT, "version.json"), encoding="utf-8") as _f:
+    VERSION = json.load(_f)["version"]
+# 文件名带版本号，便于「检查更新」在不运行 EXE 的情况下比较版本
+EXE_NAME = "材料平差批量生成器_v%s" % VERSION
 DIST = os.path.join(ROOT, "dist")
 BUILD = os.path.join(ROOT, "build")
 ASSETS = os.path.join(ROOT, "assets")

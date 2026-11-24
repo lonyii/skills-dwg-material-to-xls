@@ -57,6 +57,7 @@ import_materials.TEMPLATE_ALIASES["sample"] = TEMPLATE_XLS
 
 
 VALID_EXT = (".dwg", ".dxf")
+APP_VERSION = "2.5.15"
 
 # 局域网更新源与本地更新目录（只存放 EXE）。
 LAN_UPDATE_DIR = r"\\Jsztnas\团队文件\内部应用"
@@ -88,6 +89,16 @@ def stamp() -> str:
 
 def normalize(path: str) -> str:
     return os.path.normcase(os.path.abspath(path))
+
+
+def parse_version(text) -> tuple:
+    """从 EXE 文件名/版本字符串中提取 (主,次,修订)，找不到返回 None。"""
+    m = re.search(r"v?(\d+)\.(\d+)\.(\d+)", str(text))
+    return tuple(int(x) for x in m.groups()) if m else None
+
+
+def fmt_version(ver) -> str:
+    return ".".join(str(x) for x in ver) if ver else "未知"
 
 
 # --------------------------------------------------------------------------- #
@@ -159,8 +170,10 @@ class App:
         self.paths = []            # [{"path": str, "kind": "图纸"|"文件夹"}]
         self.seen = set()
         self.running = False
+        self.updating = False
         self.output_dir = ""
         self.q = queue.Queue()
+        self.update_q = queue.Queue()
 
         self._build_style()
         self._build_ui()
@@ -456,48 +469,69 @@ class App:
             btn.configure(state=state)
 
     def lan_update(self):
-        """从局域网共享目录拉取最新 EXE，保存到专用更新文件夹（只放 EXE）。"""
-        root = os.environ.get("DWG2XLS_LAN_UPDATE_DIR", LAN_UPDATE_DIR)
-        if not os.path.isdir(root):
-            msg = "找不到局域网更新目录：\n%s\n\n请确认共享路径可访问。" % root
-            self.append_log("\n[更新失败] " + msg + "\n")
-            messagebox.showerror("检查更新", msg)
+        """后台检查更新：先比版本，只有更新才下载，避免界面卡住。"""
+        if self.updating or self.running:
+            messagebox.showinfo("检查更新", "正在处理其它任务，请稍后再试。")
             return
-        # 在更新地址下自建专用文件夹，只存放 EXE。
-        source = os.path.join(root, REMOTE_EXE_FOLDER)
+        self.updating = True
+        self.btn_update.configure(state="disabled")
+        self.progress.configure(value=0)
+        self.status_var.set("正在检查更新…")
+        self.update_q = queue.Queue()
+        threading.Thread(target=self._update_worker, daemon=True).start()
+        self.root.after(80, self._poll_update)
+
+    def _update_worker(self):
+        def post(action, **kw):
+            self.update_q.put(dict(action=action, **kw))
+
         try:
+            post("progress", value=10)
+            root = os.environ.get("DWG2XLS_LAN_UPDATE_DIR", LAN_UPDATE_DIR)
+            if not os.path.isdir(root):
+                post("error", message="找不到局域网更新目录：\n%s\n\n请确认共享路径可访问。" % root)
+                return
+            source = os.path.join(root, REMOTE_EXE_FOLDER)
             os.makedirs(source, exist_ok=True)
-        except OSError as exc:
-            msg = "无法创建更新文件夹：\n%s\n\n%s" % (source, exc)
-            self.append_log("\n[更新失败] " + msg + "\n")
-            messagebox.showerror("检查更新", msg)
-            return
-        exes = [os.path.join(source, n) for n in os.listdir(source)
-                if n.lower().endswith(".exe") and os.path.isfile(os.path.join(source, n))]
-        if not exes:
-            msg = "更新文件夹中暂无 EXE，请将最新版本放入：\n%s" % source
-            self.append_log("\n[更新] " + msg + "\n")
-            messagebox.showinfo("检查更新", msg)
-            try:
-                os.startfile(source)
-            except OSError:
-                pass
-            return
-        latest = max(exes, key=lambda p: os.path.getmtime(p))
-        target_dir = local_update_dir()
-        target = os.path.join(target_dir, os.path.basename(latest))
+            post("progress", value=30)
 
-        if os.path.isfile(target) and \
-                os.path.getsize(target) == os.path.getsize(latest) and \
-                abs(os.path.getmtime(target) - os.path.getmtime(latest)) < 2:
-            self.append_log("\n[更新] 本地已是最新版本：%s\n" % target)
-            if messagebox.askyesno("检查更新", "已是最新版本。\n\n是否打开更新文件夹？"):
-                os.startfile(target_dir)
-            return
+            exes = [os.path.join(source, n) for n in os.listdir(source)
+                    if n.lower().endswith(".exe") and os.path.isfile(os.path.join(source, n))]
+            if not exes:
+                post("info",
+                     message="更新文件夹中暂无 EXE，请将最新版本放入：\n%s" % source,
+                     open_dir=source)
+                return
 
-        try:
+            # 优先按文件名中的版本号比较；无版本号时按文件时间/大小兜底。
+            candidates = []
+            for p in exes:
+                ver = parse_version(os.path.basename(p))
+                candidates.append((ver or (0, 0, 0), os.path.getmtime(p), p, ver))
+            candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+            _, remote_mtime, latest, remote_ver = candidates[0]
+            current_ver = parse_version(APP_VERSION)
+            post("progress", value=55)
+
+            if remote_ver and current_ver:
+                if remote_ver <= current_ver:
+                    post("already",
+                         message="已是最新版本（当前 v%s，共享版本 v%s）。"
+                                 % (fmt_version(current_ver), fmt_version(remote_ver)))
+                    return
+            else:
+                current_exe = sys.executable if getattr(sys, "frozen", False) \
+                    else os.path.abspath(__file__)
+                if os.path.isfile(current_exe) and \
+                        os.path.getsize(current_exe) == os.path.getsize(latest) and \
+                        remote_mtime <= os.path.getmtime(current_exe) + 2:
+                    post("already", message="共享 EXE 与当前版本相同，无需更新。")
+                    return
+
+            post("progress", value=75)
+            target_dir = local_update_dir()
+            target = os.path.join(target_dir, os.path.basename(latest))
             shutil.copy2(latest, target)
-            # 该目录由程序自建，仅保留 EXE；清掉以前下载的旧版本，避免误运行。
             for name in os.listdir(target_dir):
                 if name.lower().endswith(".exe") and os.path.abspath(
                         os.path.join(target_dir, name)) != os.path.abspath(target):
@@ -505,24 +539,60 @@ class App:
                         os.remove(os.path.join(target_dir, name))
                     except OSError:
                         pass
-        except OSError as exc:
-            msg = "下载更新失败：%s" % exc
-            self.append_log("\n[更新失败] " + msg + "\n")
-            messagebox.showerror("检查更新", msg)
-            return
+            post("progress", value=100)
+            post("downloaded", target=target,
+                 message="发现新版本 v%s，已保存到：\n%s\n\n是否立即启动新版本？"
+                         % (fmt_version(remote_ver or parse_version(os.path.basename(latest))), target))
+        except Exception:
+            post("error", message="检查更新失败：\n%s" % traceback.format_exc())
 
-        self.append_log("\n[更新完成] %s\n" % target)
-        if messagebox.askyesno(
-                "检查更新",
-                "新版本已保存到：\n%s\n\n是否立即启动新版本？" % target):
+    def _poll_update(self):
+        while True:
             try:
-                subprocess.Popen([target], close_fds=True)
-                self.root.after(600, self.root.destroy)
-            except OSError as exc:
-                messagebox.showerror("局域网更新", "启动新版本失败：%s" % exc)
+                item = self.update_q.get_nowait()
+            except queue.Empty:
+                break
+            action = item.get("action")
+            if action == "progress":
+                self.progress.configure(value=item.get("value", 0))
+                continue
+            if action == "log":
+                self.append_log(item.get("text", ""))
+                continue
+
+            self.updating = False
+            self.btn_update.configure(state="normal")
+            self.status_var.set("检查更新完成")
+            if action == "error":
+                self.append_log("\n[更新失败] %s\n" % item.get("message", ""))
+                messagebox.showerror("检查更新", item.get("message", "检查更新失败"))
+            elif action == "already":
+                self.append_log("\n[更新] %s\n" % item.get("message", ""))
+                messagebox.showinfo("检查更新", item.get("message", "已是最新版本"))
+            elif action == "info":
+                self.append_log("\n[更新] %s\n" % item.get("message", ""))
+                messagebox.showinfo("检查更新", item.get("message", ""))
+                open_dir = item.get("open_dir")
+                if open_dir:
+                    try:
+                        os.startfile(open_dir)
+                    except OSError:
+                        pass
+            elif action == "downloaded":
+                self.append_log("\n[更新完成] %s\n" % item.get("target", ""))
+                answer = messagebox.askyesno("检查更新", item.get("message", "更新完成"))
+                if answer:
+                    try:
+                        subprocess.Popen([item["target"]], close_fds=True)
+                        self.root.after(600, self.root.destroy)
+                    except (OSError, KeyError) as exc:
+                        messagebox.showerror("检查更新", "启动新版本失败：%s" % exc)
+            return
+        if self.updating:
+            self.root.after(80, self._poll_update)
 
     def start(self):
-        if self.running:
+        if self.running or self.updating:
             return
         if not self.paths:
             messagebox.showinfo("提示", "请先添加 DWG / DXF 文件或文件夹。")
