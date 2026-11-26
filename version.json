@@ -2,11 +2,12 @@
   "skill": "dwg-material-to-xls",
   "author": "lonyii",
   "email": "lonyii@qq.com",
-  "version": "2.5.26",
+  "version": "2.5.27",
   "released": "2026-11-24",
   "repo": "https://github.com/lonyii/skills-dwg-material-to-xls",
   "branch": "main",
   "changelog": [
+    "2.5.27 (2026-11-26) 用 Python 逐动作复刻模板宏 StartHere：同分部内按「描述+单位」Cut/Insert 移动对齐（不是新建重复行），复刻 CheckBefore、O 列只按描述判等、A:G/I:N 整列插入、A 列 FillDown、按 A 排序与重排序号；默认 row-base=starthere。与真实宏在 NC24I053 上逐行比对 119 行 0 差异。",
     "2.5.26 (2026-11-26) 材料归一默认完全采用模板宏 StartHere 的规则：同分组内「描述+单位」原始字符串完全相同才配对，取消别名表与模糊指纹归一；实测 NC24I053 的「玻璃标示桩_100mm*100mm*800m」「闸阀_Z47W-16C_DN300（单闸板）」按施工图原描述写入并保留施工数量，竣工侧简称项独立保留。旧规则可用环境变量 DWG2XLS_LEGACY_MATCH=1 兼容。",
     "2.5.25 (2026-11-26) 修复 NC24I053 施工图材料表漏项：auto_export.choose_row_base 将无分组的施工图独有项误判为不同分组，自动误选 asbuilt 导致 39 项施工图物料不进成品；改为仅明确分组计入 outside，自动选 merged。import_materials 新增已验证别名（玻璃标示桩=标识桩、闸阀_Z47W-16C_DN300（单闸板）=闸阀_Z47W-16C_DN300），merged 行序对齐改用同一匹配指纹，避免同一物料被拆成增加/减少两行。",
     "2.5.24 (2026-11-26) 修复变更单生成后残留 [第1列结束]/[第2列结束] 标识符和反引号占位符（实测 NC24I053）：原 CreateBianGengdan 用 Cells.Replace 清理，Excel 上次查找/替换的 SearchFormat/ReplaceFormat 粘滞时 Replace 静默失效，且 On Error Resume Next 掩盖错误。改为直接逐格字符串替换的 CleanChangeOrderText 过程，清理范围覆盖 1~10 列所有 [第N列开始/结束]/[数量N] 和 ` → _；在进入宏和异常退出时清除粘滞格式并补做清理；template_summary 与 template_sample 两份模板同步修复。",

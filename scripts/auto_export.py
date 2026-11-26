@@ -52,7 +52,7 @@ from dwg_tables import (  # noqa: E402
     norm_desc, open_cad_app, order_tables, parse_table,
 )
 from import_materials import (  # noqa: E402
-    match_rows, match_rows_design_base, match_rows_merged,
+    match_rows, match_rows_design_base, match_rows_merged, match_rows_starthere,
     resolve_template, write_xls,
 )
 
@@ -64,7 +64,7 @@ PROJ_RE = re.compile(r"[A-Z]{2}\d{2}[A-Z]\d{3}", re.I)
 PROJ_REF_RE = re.compile(r"碰接点|详见|参见|另详|参考|已建|既有|原有|图集|标准图")
 ILLEGAL = re.compile(r'[\\/:*?"<>|\r\n\t]')
 MATCHERS = {"asbuilt": match_rows, "design": match_rows_design_base,
-            "merged": match_rows_merged}
+            "merged": match_rows_merged, "starthere": match_rows_starthere}
 
 
 def _flat(s):
@@ -531,7 +531,7 @@ def main(argv=None):
     p.add_argument("--template", default="summary",
                    help="summary（默认）/ sample / 任意 .xls 路径")
     p.add_argument("--row-base", default="auto",
-                   choices=("auto", "asbuilt", "design", "merged"))
+                   choices=("auto", "asbuilt", "design", "merged", "starthere"))
     p.add_argument("--match-mode", default="group", choices=("group", "global", "hybrid"))
     # 兼容旧命令：v1.5.0 起默认且强制忽略竣工图内的施工图材料表，此参数不再有作用
     p.add_argument("--no-supplement", action="store_true", help=argparse.SUPPRESS)
@@ -719,8 +719,7 @@ def main(argv=None):
                 print("  [提示] %s：施工图文件未检测到本工程的材料表，施工图数量将全部留空；"
                       "请确认施工图是否为最终版。" % base)
 
-        base_mode = (choose_row_base(asbuilt, design, single)
-                     if args.row_base == "auto" else args.row_base)
+        base_mode = ("starthere" if args.row_base == "auto" else args.row_base)
         rows, extras, stats = MATCHERS[base_mode](asbuilt, design, mode=args.match_mode)
         stats.update({"project_no": proj_no, "project_name": name,
                       "row_base": base_mode, "single_asbuilt": single,

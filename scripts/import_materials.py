@@ -158,6 +158,198 @@ def _find_cand(pool, used, key, group, mode, desc=None):
     return None
 
 
+def match_rows_starthere(asbuilt, design, mode="group"):
+    """逐动作复刻模板宏 StartHere（施工图及竣工图材料同步.bas）。
+
+    复刻范围：CheckBefore 分组校验、O 列 =IF(C=J,"相同","") 判等、
+    CompareAndSync 的同分部 Cut/Insert 移动与整列插入、StartHere 末尾的
+    A 列 FillDown、按 A 升序排序、重排序号。isLeftorRight=-1。
+    输入会先按两侧标题生成相同骨架（宏 CheckBefore 的前提）。
+    """
+    def cell(r, unit=""):
+        if r is None:
+            return None
+        return dict(r)
+
+    def txt(r):
+        if r is None:
+            return ""
+        return str(r.get("desc", "")) + str(r.get("unit") or "")
+
+    def desc(r):
+        return "" if r is None else str(r.get("desc", ""))
+
+    def hdr(r):
+        return bool(r and r.get("is_header"))
+
+    def grp(r):
+        return "" if r is None else str(r.get("group", ""))
+
+    # ---- 1. 生成两侧一致的标题骨架 ----
+    ah = [r for r in asbuilt if hdr(r)]
+    dh = [r for r in design if hdr(r)]
+    titles = []
+    for r in ah + dh:
+        if r["desc"] not in titles:
+            titles.append(r["desc"])
+    def bucket(rows):
+        d = {"(主体)": []}
+        d.update({t: [] for t in titles})
+        cur = "(主体)"
+        for r in rows:
+            if hdr(r):
+                cur = r["desc"] if r["desc"] in d else "(主体)"
+            d[cur].append(dict(r))
+        return d
+    am, dm = bucket(asbuilt), bucket(design)
+    groups = (["(主体)"] if am.get("(主体)") or dm.get("(主体)") else []) + titles
+    left, right = [], []
+    for g in groups:
+        for side, source in ((left, am), (right, dm)):
+            rows = source[g]
+            has_header = any(hdr(r) for r in rows)
+            if g != "(主体)" and not has_header:
+                side.append({"desc": g, "unit": "", "qty": None,
+                             "is_header": True, "group": g, "A": None})
+            for r in rows:
+                rr = dict(r)
+                rr["A"] = None
+                side.append(rr)
+    # 宏 GetRows 取 UsedRange 最后一行；加强版模板 O 列公式预置到第 118 行。
+    # 复刻时保留这些尾部空行，否则 rn="" 分支会少执行。
+    n = max(len(left), len(right), 118)
+    left += [None] * (n - len(left))
+    right += [None] * (n - len(right))
+
+    def get(side, i):
+        return side[i] if 0 <= i < len(side) else None
+
+    def ins(side, i, value):
+        if i > len(side):
+            side.extend([None] * (i - len(side)))
+        side.insert(i, value)
+        return max(len(left), len(right))
+
+    # ---- 2. StartHere 初始化：A 序号、O 公式（只比较 C=J） ----
+    def assign_A():
+        for i in range(n):
+            if left[i] is not None:
+                left[i]["A"] = i - 3 + 1       # Excel 行 4 -> A=1
+    assign_A()
+
+    # ---- 3. CompareAndSync 循环（每次调用最多做一个动作） ----
+    for _ in range(1000):
+        changed = False
+        lb = rb = ""
+        for i in range(n):
+            L, R = get(left, i), get(right, i)
+            if hdr(L):
+                lb = txt(L)
+            if hdr(R):
+                rb = txt(R)
+            lN, rn = txt(L), txt(R)
+            # O(i) = IF(C=J,"相同","")
+            if desc(L) != desc(R) and lb == rb:
+                changed = True
+                if not lN:                      # 左侧空：A:G 插入，B:D=I:K
+                    newL = dict(R, A=None) if R else None
+                    if newL is not None:
+                        newL.update({"desc": desc(R), "unit": (R or {}).get("unit", ""),
+                                     "qty": None, "is_header": hdr(R)})
+                    n = ins(left, i, newL)
+                    break
+                if not rn:                      # 右侧空：I:N 插入，I:K=B:D
+                    newR = dict(L) if L else None
+                    if newR is not None:
+                        newR.update({"desc": desc(L), "unit": (L or {}).get("unit", ""),
+                                     "qty": None, "is_header": hdr(L)})
+                    n = ins(right, i, newR)
+                    break
+                # isLeftorRight=-1：在本分部内向下找左侧匹配行，Cut/Insert 移动
+                j = None
+                lb_tmp = lb
+                for l in range(i, n):
+                    LL = get(left, l)
+                    if hdr(LL):
+                        lb_tmp = txt(L)         # 宏原文用 C(i)&D(i)，不是 C(l)
+                    ln_tmp = txt(LL)
+                    if lb_tmp == rb:
+                        if ln_tmp == rn:
+                            j = l
+                            break
+                    else:
+                        break
+                if j is not None:
+                    row = left.pop(j) if j < len(left) else None
+                    if j > len(left):
+                        left.extend([None] * (j - len(left)))
+                    n = ins(left, i, row)
+                    break
+                # 找不到：A:G 插入，B:D=I:K（数量留空）
+                newL = dict(R, A=None) if R else None
+                if newL is not None:
+                    newL.update({"desc": desc(R), "unit": (R or {}).get("unit", ""),
+                                 "qty": None, "is_header": hdr(R)})
+                n = ins(left, i, newL)
+                break
+            elif lb != rb:
+                if lN == lb:                    # 左侧到达下一分部头，复制右侧项目到左侧
+                    newL = dict(R, A=None) if R else None
+                    if newL is not None:
+                        newL.update({"desc": desc(R), "unit": (R or {}).get("unit", ""),
+                                     "qty": None, "is_header": hdr(R)})
+                    n = ins(left, i, newL)
+                    changed = True
+                    break
+                if rn == rb:                    # 反之复制到右侧
+                    newR = dict(L) if L else None
+                    if newR is not None:
+                        newR.update({"desc": desc(L), "unit": (L or {}).get("unit", ""),
+                                     "qty": None, "is_header": hdr(L)})
+                    n = ins(right, i, newR)
+                    changed = True
+                    break
+        if not changed:
+            break
+
+    # ---- 4. StartHere 收尾：A 列 FillDown -> 按 A 升序排序 -> 重排序号 ----
+    lastA = None
+    for i in range(n):
+        if left[i] is not None:
+            if left[i].get("A") in (None, ""):
+                left[i]["A"] = lastA
+            else:
+                lastA = left[i]["A"]
+    order = sorted(range(n), key=lambda i: (left[i] is None or left[i].get("A") is None,
+                                            left[i].get("A") if left[i] else 0, i))
+    left = [left[i] if i < len(left) else None for i in order]
+    right = [right[i] if i < len(right) else None for i in order]
+    for i in range(n):
+        if left[i] is not None:
+            left[i]["A"] = i - 3 + 1
+
+    out, extras = [], []
+    for L, R in zip(left, right):
+        if L is None and R is None:
+            continue
+        h = hdr(L) or hdr(R)
+        a, d = L or R, R or L
+        out.append({
+            "seq": len(out) + 1,
+            "a_desc": a["desc"], "a_unit": "" if h else a.get("unit", ""),
+            "a_qty": None if h or L is None else L.get("qty"),
+            "j_desc": d["desc"], "k_unit": "" if h else d.get("unit", ""),
+            "l_qty": None if h or R is None else R.get("qty"),
+            "is_header": h, "group": grp(L) or grp(R),
+            "matched": None if h else (desc(L) == desc(R) and bool(desc(L))),
+        })
+        if R is not None and L is None and not h:
+            extras.append(R)
+    stats = _stats(asbuilt, design, out, extras)
+    stats["row_base"] = "starthere"
+    return out, extras, stats
+
+
 def _stats(asbuilt, design, out, extras):
     return {
         "asbuilt_rows": len(asbuilt),
@@ -462,11 +654,10 @@ def main(argv=None):
     p.add_argument("--asbuilt-tables", type=_ids, default=None)
     p.add_argument("--design-tables", type=_ids, default=None)
     p.add_argument("--match-mode", default="group", choices=("group", "global", "hybrid"))
-    p.add_argument("--row-base", default="asbuilt",
-                   choices=("asbuilt", "design", "merged"),
-                   help="输出行序基准：asbuilt（默认，按竣工图表）/ "
-                        "design（按施工图表，竣工独有追加表尾）/ "
-                        "merged（两表并集，独有项按各自原顺序交错插入）")
+    p.add_argument("--row-base", default="starthere",
+                   choices=("asbuilt", "design", "merged", "starthere"),
+                   help="输出行序基准：starthere（默认，100%% 复刻模板宏 StartHere 的同分部移动对齐）/ "
+                        "asbuilt（按竣工图表）/ design（按施工图表）/ merged（两表并集）")
     # 兼容旧命令：v1.5.0 起默认且强制忽略竣工图内的施工图材料表，此参数不再有作用
     p.add_argument("--no-supplement", action="store_true", help=argparse.SUPPRESS)
     p.add_argument("--template", default="summary",
@@ -493,7 +684,7 @@ def main(argv=None):
 
     design_base = args.row_base in ("design", "merged")
     matcher = {"asbuilt": match_rows, "design": match_rows_design_base,
-               "merged": match_rows_merged}[args.row_base]
+               "merged": match_rows_merged, "starthere": match_rows_starthere}[args.row_base]
     rows, extras, stats = matcher(asbuilt, design, mode=args.match_mode)
     stats["row_base"] = args.row_base
     stats["design_source"] = "用户施工图文件（竣工图内施工图材料表已忽略）"
