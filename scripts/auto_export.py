@@ -472,7 +472,16 @@ def choose_row_base(asbuilt, design, single):
     if not extras:
         return "asbuilt"
     groups = {norm_desc(r["group"]) for r in asbuilt if r["is_header"]}
-    outside = sum(1 for e in extras if norm_desc(e.get("group", "")) not in groups)
+    # 2026-11-26 修复：无分组的施工图独有项（实测 NC24I053 的「玻璃标示桩」
+    # 「闸阀_Z47W-16C_DN300（单闸板）」等）不属于“竣工表没有的分组”，
+    # 原先空分组也被算作 outside，导致大半独有项被误判为“施工图范围更大”，
+    # 自动选 asbuilt 后这些物料完全不写进成品。只有带明确分组、且该分组
+    # 在竣工表中不存在时才按“范围更大”处理。
+    outside = 0
+    for e in extras:
+        g = norm_desc(e.get("group", ""))
+        if g and g not in groups:
+            outside += 1
     return "asbuilt" if outside / len(extras) > 0.5 else "merged"
 
 

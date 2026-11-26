@@ -68,6 +68,13 @@ def _asset_file(ascii_name, legacy_cn_name):
 TEMPLATE_SUMMARY = _asset_file("template_summary.xls", "材料汇总模板-加强比对版.xls")
 TEMPLATE_SAMPLE = _asset_file("template_sample.xls", "材料平差模板.xls")
 DEFAULT_TEMPLATE = TEMPLATE_SUMMARY      # 生产用空白加强版：115 行明细 + 完整汇总/打印版
+
+# 同一物料在施工图/竣工图上使用不同写法的已验证别名（规范化后的描述 → 统一描述）。
+# 仅收录有实测证据的写法，避免宽泛别名把不同物料串在一起。
+DESC_ALIASES = {
+    "闸阀_Z47W-16C_DN300(单闸板)": "闸阀_Z47W-16C_DN300",
+    "玻璃标示桩_100mm*100mm*800m": "标识桩",
+}
 TEMPLATE_ALIASES = {
     "summary": TEMPLATE_SUMMARY,          # 空白加强比对版（9 张表，明细容量 115 行）
     "sample": TEMPLATE_SAMPLE,            # IC24H201 成品文件（用于复现与逐格验收）
@@ -101,7 +108,9 @@ def _match_fp(desc):
               r"普通级防腐", r"三层PE防腐"):
         x = re.sub(p, "", x, flags=re.I)
     x = re.sub(r"_+", "_", x).strip("_")
-    return x
+    # 实测别名：施工图在型号后补注「（单闸板）」、竣工图简称「标识桩」等，
+    # 统一到同一描述后再匹配，避免同一物料被拆成“增加/减少”两行。
+    return DESC_ALIASES.get(x, x)
 
 
 def _find_cand(pool, used, key, group, mode, desc=None):
@@ -233,7 +242,10 @@ def match_rows_design_base(asbuilt, design, mode="group"):
 
 
 def _row_key(r):
-    return ("H:" if r["is_header"] else "D:") + norm_desc(r["desc"])
+    # 2026-11-26 修复：与 match_rows 的指纹回退保持一致，否则 merged 行序
+    # 只按原描述对齐，实测「闸阀_Z47W-16C_DN300（单闸板）」与竣工图
+    # 「闸阀_Z47W-16C_DN300」无法配对，同一物料被拆成增加/减少两行。
+    return ("H:" if r["is_header"] else "D:") + _match_fp(r["desc"])
 
 
 def _dedupe_headers(rows):
