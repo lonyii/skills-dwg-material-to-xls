@@ -57,7 +57,7 @@ import_materials.TEMPLATE_ALIASES["sample"] = TEMPLATE_XLS
 
 
 VALID_EXT = (".dwg", ".dxf")
-APP_VERSION = "2.5.23"
+APP_VERSION = "2.5.27"
 
 # 局域网更新源与本地更新目录（只存放 EXE）。
 LAN_UPDATE_DIR = r"\\Jsztnas\团队文件\内部应用"

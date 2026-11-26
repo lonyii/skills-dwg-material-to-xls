@@ -18,12 +18,22 @@ from __future__ import annotations
 import glob
 import json
 import os
+import re
 import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 with open(os.path.join(ROOT, "version.json"), encoding="utf-8") as _f:
     VERSION = json.load(_f)["version"]
+
+# 打包前把 GUI 里的 APP_VERSION 同步为 version.json 的版本，
+# 否则「检查更新」会用旧版本号判断，导致同一版本被反复下载。
+_GUI = os.path.join(ROOT, "gui_app.py")
+with open(_GUI, encoding="utf-8") as _f:
+    _gui_src = _f.read()
+_gui_src = re.sub(r'APP_VERSION = "\d+\.\d+\.\d+"', 'APP_VERSION = "%s"' % VERSION, _gui_src, count=1)
+with open(_GUI, "w", encoding="utf-8") as _f:
+    _f.write(_gui_src)
 # 文件名带版本号，便于「检查更新」在不运行 EXE 的情况下比较版本
 EXE_NAME = "材料平差批量生成器_v%s" % VERSION
 DIST = os.path.join(ROOT, "dist")
