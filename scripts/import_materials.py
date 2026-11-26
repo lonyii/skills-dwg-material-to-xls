@@ -69,12 +69,14 @@ TEMPLATE_SUMMARY = _asset_file("template_summary.xls", "材料汇总模板-加�
 TEMPLATE_SAMPLE = _asset_file("template_sample.xls", "材料平差模板.xls")
 DEFAULT_TEMPLATE = TEMPLATE_SUMMARY      # 生产用空白加强版：115 行明细 + 完整汇总/打印版
 
-# 同一物料在施工图/竣工图上使用不同写法的已验证别名（规范化后的描述 → 统一描述）。
-# 仅收录有实测证据的写法，避免宽泛别名把不同物料串在一起。
-DESC_ALIASES = {
+# 2026-11-26：v2.5.26 起材料归一默认完全采用模板宏 StartHere 的规则——
+# 分组名相同、描述+单位字符串完全相同才配对，不再做别名/模糊归一。
+# 下列别名与模糊指纹仅作旧项目兼容，设置环境变量 DWG2XLS_LEGACY_MATCH=1 才启用。
+LEGACY_DESC_ALIASES = {
     "闸阀_Z47W-16C_DN300(单闸板)": "闸阀_Z47W-16C_DN300",
     "玻璃标示桩_100mm*100mm*800m": "标识桩",
 }
+LEGACY_MATCH = os.environ.get("DWG2XLS_LEGACY_MATCH", "") == "1"
 TEMPLATE_ALIASES = {
     "summary": TEMPLATE_SUMMARY,          # 空白加强比对版（9 张表，明细容量 115 行）
     "sample": TEMPLATE_SAMPLE,            # IC24H201 成品文件（用于复现与逐格验收）
@@ -110,7 +112,18 @@ def _match_fp(desc):
     x = re.sub(r"_+", "_", x).strip("_")
     # 实测别名：施工图在型号后补注「（单闸板）」、竣工图简称「标识桩」等，
     # 统一到同一描述后再匹配，避免同一物料被拆成“增加/减少”两行。
-    return DESC_ALIASES.get(x, x)
+    return LEGACY_DESC_ALIASES.get(x, x) if LEGACY_MATCH else x
+
+
+def _macro_key(r):
+    """StartHere 宏的物料键：C&D（描述+单位）原始字符串拼接。
+
+    宏里 lN = C & D、rn = J & K，只在同分组 lb=rb 时按该字符串精确查找；
+    除 StartHere 开头的 %%d→°（clean_text 已处理）外不做任何归一。
+    """
+    if r.get("is_header"):
+        return r.get("desc", "")
+    return str(r.get("desc", "")) + str(r.get("unit", ""))
 
 
 def _find_cand(pool, used, key, group, mode, desc=None):
@@ -122,19 +135,20 @@ def _find_cand(pool, used, key, group, mode, desc=None):
         for i, d in enumerate(pool):
             if i in used or d["is_header"]:
                 continue
-            if norm_desc(d["desc"]) == key and norm_desc(d["group"]) == group:
+            # StartHere 规则：描述+单位（宏 lN/rn = C&D / J&K）完全相同，分组完全相同
+            if _macro_key(d) == key and d["group"] == group:
                 return i
     if mode in ("global", "hybrid"):
         for i, d in enumerate(pool):
             if i in used or d["is_header"]:
                 continue
-            if norm_desc(d["desc"]) == key:
+            if d["desc"] == key:
                 return i
     # 指纹回退：仅当调用方传入原始描述、且精确匹配全部失败时启用。
     # 作用有二：①防腐/标准号写法差异（fp!=key）；②描述相同但两侧分组标注
     # 不同（实测 NC26I013 保护沟：施工图归入「不入系统材料」组、竣工无分组，
     # 严格同组匹配失败）。两种情况都按描述指纹再找一次。
-    if desc is not None:
+    if desc is not None and LEGACY_MATCH:
         fp = _match_fp(desc)
         for i, d in enumerate(pool):
             if i in used or d["is_header"]:
@@ -161,7 +175,7 @@ def match_rows(asbuilt, design, mode="group"):
     used = set()
     out = []
     for a in asbuilt:
-        key = norm_desc(a["desc"])
+        key = _macro_key(a)
         if a["is_header"]:
             out.append({
                 "seq": len(out) + 1,
@@ -170,7 +184,7 @@ def match_rows(asbuilt, design, mode="group"):
                 "is_header": True, "group": a["group"], "matched": None,
             })
             continue
-        cand = _find_cand(design, used, key, norm_desc(a["group"]), mode,
+        cand = _find_cand(design, used, key, a["group"], mode,
                           desc=a["desc"])
         if cand is not None:
             used.add(cand)
@@ -200,9 +214,9 @@ def match_rows_design_base(asbuilt, design, mode="group"):
     last_header = {}
     for i, d in enumerate(design):
         if d["is_header"]:
-            last_header[norm_desc(d["desc"])] = i
+            last_header[d["desc"]] = i
     for i, d in enumerate(design):
-        key = norm_desc(d["desc"])
+        key = _macro_key(d)
         if d["is_header"]:
             if last_header.get(key) != i:
                 continue
@@ -213,7 +227,7 @@ def match_rows_design_base(asbuilt, design, mode="group"):
                 "is_header": True, "group": d["group"], "matched": None,
             })
             continue
-        cand = _find_cand(asbuilt, used, key, norm_desc(d["group"]), mode)
+        cand = _find_cand(asbuilt, used, key, d["group"], mode)
         if cand is not None:
             used.add(cand)
             a = asbuilt[cand]
@@ -245,7 +259,8 @@ def _row_key(r):
     # 2026-11-26 修复：与 match_rows 的指纹回退保持一致，否则 merged 行序
     # 只按原描述对齐，实测「闸阀_Z47W-16C_DN300（单闸板）」与竣工图
     # 「闸阀_Z47W-16C_DN300」无法配对，同一物料被拆成增加/减少两行。
-    return ("H:" if r["is_header"] else "D:") + _match_fp(r["desc"])
+    # StartHere 规则：描述+单位原始拼接，不做别名/模糊归一
+    return ("H:" if r["is_header"] else "D:") + _macro_key(r)
 
 
 def _dedupe_headers(rows):
@@ -253,9 +268,9 @@ def _dedupe_headers(rows):
     last = {}
     for i, r in enumerate(rows):
         if r["is_header"]:
-            last[norm_desc(r["desc"])] = i
+            last[r["desc"]] = i
     return [r for i, r in enumerate(rows)
-            if not r["is_header"] or last.get(norm_desc(r["desc"])) == i]
+            if not r["is_header"] or last.get(r["desc"]) == i]
 
 
 def match_rows_merged(asbuilt, design, mode="group"):
